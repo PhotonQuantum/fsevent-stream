@@ -25,10 +25,10 @@ use core_foundation::array::CFArray;
 use core_foundation::base::{CFIndex, FromVoid};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
-use core_foundation::runloop::{kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode, CFRunLoop};
+use core_foundation::runloop::{CFRunLoop, kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode};
 use core_foundation::string::CFString;
-use futures::stream::{abortable, AbortHandle, Abortable};
 use futures::{Stream, StreamExt};
+use futures::stream::{abortable, Abortable, AbortHandle};
 use log::{debug, error};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -37,10 +37,10 @@ use crate::impl_release_callback;
 use crate::observer::create_oneshot_observer;
 use crate::raw as fs;
 use crate::raw::{
-    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamCreateFlagUseExtendedData,
-    kFSEventStreamEventExtendedDataPathKey, kFSEventStreamEventExtendedFileIDKey, CFRunLoopExt,
-    FSEventStream, FSEventStreamContext, FSEventStreamCreateFlags, FSEventStreamEventFlags,
-    FSEventStreamEventId,
+    CFRunLoopExt, FSEventStream,
+    FSEventStreamContext, FSEventStreamCreateFlags, FSEventStreamEventFlags,
+    FSEventStreamEventId, kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamCreateFlagUseExtendedData, kFSEventStreamEventExtendedDataPathKey,
+    kFSEventStreamEventExtendedFileIDKey,
 };
 
 /// An owned permission to stop a `RawEventStream` and terminate its backing `RunLoop`.
@@ -85,7 +85,7 @@ impl RawEventStreamHandler {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RawEvent {
     pub path: PathBuf,
     pub inode: i64,
@@ -127,7 +127,7 @@ impl<T> SendWrapper<T> {
 /// # Errors
 /// Return error when there's any invalid path in `paths_to_watch`.
 pub fn raw_event_stream<P: AsRef<Path>>(
-    paths_to_watch: impl IntoIterator<Item = P>,
+    paths_to_watch: impl IntoIterator<Item=P>,
     since_when: FSEventStreamEventId,
     latency: Duration,
     flags: FSEventStreamCreateFlags,
@@ -158,13 +158,18 @@ pub fn raw_event_stream<P: AsRef<Path>>(
     let (runloop_tx, runloop_rx) = channel();
 
     let thread_handle = thread::spawn(move || {
+        #[cfg(test)]
+            TEST_RUNNING_RUNLOOP_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
         let current_runloop = CFRunLoop::get_current();
 
         stream.schedule(&current_runloop, unsafe { kCFRunLoopDefaultMode });
         stream.start();
 
         // the calling to CFRunLoopRun will be terminated by CFRunLoopStop call in drop()
-        // SAFETY: `CF_REF` is thread-safe.
+        // Safety:
+        // - According to the Apple documentation, it's safe to move `CFRef`s across threads.
+        //   https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/ThreadSafetySummary/ThreadSafetySummary.html
         runloop_tx
             .send(unsafe { SendWrapper::new(current_runloop) })
             .expect("send runloop to stream");
@@ -172,6 +177,9 @@ pub fn raw_event_stream<P: AsRef<Path>>(
         CFRunLoop::run_current();
         stream.stop();
         stream.invalidate();
+
+        #[cfg(test)]
+            TEST_RUNNING_RUNLOOP_COUNT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     });
 
     let (stream, stream_handle) = abortable(ReceiverStream::new(event_rx));
@@ -186,6 +194,9 @@ pub fn raw_event_stream<P: AsRef<Path>>(
         },
     ))
 }
+
+#[cfg(test)]
+static TEST_RUNNING_RUNLOOP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 extern "C" fn callback(
     stream_ref: fs::FSEventStreamRef,
@@ -232,38 +243,38 @@ fn callback_impl(
             unsafe { *event_flags.add(idx) },
             unsafe { *event_ids.add(idx) },
         ))
-        .and_then(|(extended, raw_flags, id)| {
-            let path = unsafe {
-                CFString::from_void(*extended.get(&*kFSEventStreamEventExtendedDataPathKey))
-            };
-            let inode = unsafe {
-                CFNumber::from_void(*extended.get(&*kFSEventStreamEventExtendedFileIDKey))
-            };
-            Ok((
-                PathBuf::from((*path).to_string()),
-                inode.to_i64().ok_or(CallbackError::ToI64)?,
-                raw_flags,
-                id,
-            ))
-        })
-        .and_then(|(path, inode, raw_flags, id)| {
-            StreamFlags::from_bits(raw_flags)
-                .ok_or(CallbackError::ParseFlags)
-                .map(|flags| RawEvent {
-                    path,
-                    inode,
-                    flags,
+            .and_then(|(extended, raw_flags, id)| {
+                let path = unsafe {
+                    CFString::from_void(*extended.get(&*kFSEventStreamEventExtendedDataPathKey))
+                };
+                let inode = unsafe {
+                    CFNumber::from_void(*extended.get(&*kFSEventStreamEventExtendedFileIDKey))
+                };
+                Ok((
+                    PathBuf::from((*path).to_string()),
+                    inode.to_i64().ok_or(CallbackError::ToI64)?,
                     raw_flags,
                     id,
-                })
-        }) {
+                ))
+            })
+            .and_then(|(path, inode, raw_flags, id)| {
+                StreamFlags::from_bits(raw_flags)
+                    .ok_or(CallbackError::ParseFlags)
+                    .map(|flags| RawEvent {
+                        path,
+                        inode,
+                        flags,
+                        raw_flags,
+                        id,
+                    })
+            }) {
             Ok(raw_event) =>
             // Send event out.
-            {
-                if let Err(e) = event_handler.try_send(raw_event) {
-                    error!("Unable to raw event from low-level callback: {}", e);
+                {
+                    if let Err(e) = event_handler.try_send(raw_event) {
+                        error!("Unable to raw event from low-level callback: {}", e);
+                    }
                 }
-            }
             Err(CallbackError::ToI64) => error!("Unable to convert inode field to i64"),
             Err(CallbackError::ParseFlags) => error!("Unable to parse flags"),
         }
@@ -272,11 +283,135 @@ fn callback_impl(
 
 #[cfg(test)]
 mod test {
-    use crate::fsevent::StreamContextInfo;
+    use std::fs;
+    use std::fs::File;
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc::channel;
+    use std::thread;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    use futures::StreamExt;
+    use once_cell::sync::Lazy;
+    use tempfile::tempdir;
+    use tokio::time::timeout;
+
+    use crate::flags::StreamFlags;
+    use crate::fsevent::{raw_event_stream, StreamContextInfo, TEST_RUNNING_RUNLOOP_COUNT};
+    use crate::raw::{
+        kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
+        kFSEventStreamEventFlagNone, kFSEventStreamEventIdSinceNow,
+    };
+
+    static TEST_PARALLEL_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
-    fn test_steam_context_info_send_and_sync() {
+    fn must_steam_context_info_send_and_sync() {
         fn check_send<T: Send + Sync>() {}
         check_send::<StreamContextInfo>();
+    }
+
+    #[tokio::test]
+    async fn must_abort_stream() {
+        // Acquire the lock so that no other runloop can be created during this test.
+        let _guard = TEST_PARALLEL_LOCK.lock().await;
+
+        // Create the stream to be tested.
+        let (stream, mut handler) = raw_event_stream(
+            ["."],
+            kFSEventStreamEventIdSinceNow,
+            Duration::ZERO,
+            kFSEventStreamEventFlagNone,
+        )
+            .expect("to be created");
+        // Now there should be one runloop.
+        assert_eq!(TEST_RUNNING_RUNLOOP_COUNT.load(Ordering::SeqCst), 1);
+
+        // Abort the stream immediately.
+        let abort_thread = thread::spawn(move || {
+            handler.abort();
+        });
+
+        // The stream should complete soon.
+        drop(
+            timeout(Duration::from_secs(1), stream.collect::<Vec<_>>())
+                .await
+                .expect("to complete"),
+        );
+        // The runloop should be released.
+        assert_eq!(TEST_RUNNING_RUNLOOP_COUNT.load(Ordering::SeqCst), 0);
+
+        abort_thread.join().expect("to join");
+    }
+
+    #[tokio::test]
+    async fn must_receive_fs_events() {
+        // Acquire the lock so that runloop created in this test won't affect others.
+        let _guard = TEST_PARALLEL_LOCK.lock().await;
+
+        // Create the test dir.
+        let dir = tempdir().expect("to be created");
+        let test_file = dir
+            .path()
+            .canonicalize() // ensure it's an canonical path because FSEvent api returns that
+            .expect("to succeed")
+            .join("test_file");
+
+        // Create a channel to inform the abort thread that fs operations are completed.
+        let (tx, rx) = channel();
+
+        // Create the stream to be tested.
+        let (stream, mut handler) = raw_event_stream(
+            [dir.path()],
+            kFSEventStreamEventIdSinceNow,
+            Duration::ZERO,
+            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer,
+        )
+            .expect("to be created");
+        let abort_thread = thread::spawn(move || {
+            // Once fs operations are completed, abort the stream.
+            rx.recv().expect("to be signaled");
+            handler.abort();
+        });
+
+        // First we create a file.
+        let f = File::create(&test_file).expect("to be created");
+        let inode = f.metadata().expect("to be fetched").ino() as i64;
+        // Sync so that ITEM_CREATE and ITEM_DELETE events won't be squashed into one.
+        f.sync_all().expect("to succeed");
+        drop(f);
+        // Now we delete this file.
+        fs::remove_file(&test_file).expect("to be removed");
+        // Ensure the filesystem is up to date.
+        unsafe { libc::sync() };
+        // Signal the abort thread that we are ready.
+        tx.send(()).expect("to signal");
+
+        // It's fine to consume the stream later because it's reactive and can still be consumed if it's aborted.
+        let events: Vec<_> = timeout(Duration::from_secs(3), stream.collect())
+            .await
+            .expect("to complete");
+
+        // A dir creation event might be recorded so it's ok we receive 2~3 events.
+        assert!(events.len() == 2 || events.len() == 3);
+
+        // The second last event should be the file creation event.
+        let event_fst = events.get(events.len() - 2).expect("to exist");
+        assert_eq!(event_fst.path.as_path(), test_file.as_path());
+        assert_eq!(event_fst.inode, inode);
+        assert!(event_fst
+            .flags
+            .contains(StreamFlags::ITEM_CREATED | StreamFlags::IS_FILE));
+
+        // The last event should be the file deletion event.
+        let event_snd = events.last().expect("to exist");
+        assert_eq!(event_snd.path.as_path(), test_file.as_path());
+        assert_eq!(event_snd.inode, inode);
+        assert!(event_snd
+            .flags
+            .contains(StreamFlags::ITEM_REMOVED | StreamFlags::IS_FILE));
+
+        abort_thread.join().expect("to join");
     }
 }
