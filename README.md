@@ -1,4 +1,6 @@
 # fsevent-better
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better?ref=badge_shield)
+
 
 > WIP
 
@@ -19,3 +21,5 @@ Some code in this project is adapted from the following projects:
 ## License
 
 This project is licensed under [MIT License](LICENSE).
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better?ref=badge_large)
