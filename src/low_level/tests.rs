@@ -88,7 +88,9 @@ async fn must_receive_fs_events() {
     let abort_thread = thread::spawn(move || {
         // Once fs operations are completed, abort the stream.
         rx.recv().expect("to be signaled");
-        sleep(Duration::from_secs(1));  // tolerance time
+        if option_env!("CI").is_some() {
+            sleep(Duration::from_secs(5)); // tolerance time
+        }
         handler.abort();
     });
 
@@ -106,7 +108,7 @@ async fn must_receive_fs_events() {
     tx.send(()).expect("to signal");
 
     // It's fine to consume the stream later because it's reactive and can still be consumed if it's aborted.
-    let events: Vec<_> = timeout(Duration::from_secs(3), stream.collect())
+    let events: Vec<_> = timeout(Duration::from_secs(10), stream.collect())
         .await
         .expect("to complete");
 

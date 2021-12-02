@@ -37,7 +37,7 @@ jobs:
     name: Test
     runs-on: macos-11
     env:
-      TEST_FAST: 1
+      CI: 1
     steps:
       - uses: actions/checkout@v2
         name: Checkout 🛎️
