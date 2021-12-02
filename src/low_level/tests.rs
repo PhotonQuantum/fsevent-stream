@@ -4,6 +4,7 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use std::thread;
+use std::thread::sleep;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -87,6 +88,7 @@ async fn must_receive_fs_events() {
     let abort_thread = thread::spawn(move || {
         // Once fs operations are completed, abort the stream.
         rx.recv().expect("to be signaled");
+        sleep(Duration::from_secs(1));  // tolerance time
         handler.abort();
     });
 
