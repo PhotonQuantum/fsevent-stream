@@ -209,8 +209,13 @@ unsafe fn callback_impl(
     }
 }
 
-#[test]
-fn test_steam_context_info_send_and_sync() {
-    fn check_send<T: Send + Sync>() {}
-    check_send::<StreamContextInfo>();
+#[cfg(test)]
+mod test {
+    use crate::fsevent::StreamContextInfo;
+
+    #[test]
+    fn test_steam_context_info_send_and_sync() {
+        fn check_send<T: Send + Sync>() {}
+        check_send::<StreamContextInfo>();
+    }
 }
