@@ -13,6 +13,7 @@
 
 use std::ffi::c_void;
 use std::io;
+use std::panic::catch_unwind;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::mpsc::channel;
@@ -186,7 +187,7 @@ extern "C" fn callback(
     event_flags: *const fs::FSEventStreamEventFlags, // const FSEventStreamEventFlags eventFlags[]
     event_ids: *const fs::FSEventStreamEventId,      // const FSEventStreamEventId eventIds[]
 ) {
-    unsafe {
+    drop(catch_unwind(move || {
         callback_impl(
             stream_ref,
             info,
@@ -195,10 +196,15 @@ extern "C" fn callback(
             event_flags,
             event_ids,
         );
-    }
+    }));
 }
 
-unsafe fn callback_impl(
+enum CallbackError {
+    ToI64,
+    ParseFlags,
+}
+
+fn callback_impl(
     _stream_ref: fs::FSEventStreamRef,
     info: *mut c_void,
     num_events: usize,                               // size_t numEvents
@@ -208,42 +214,50 @@ unsafe fn callback_impl(
 ) {
     debug!("Received {} event(s)", num_events);
 
-    let event_paths = CFArray::<CFDictionary<CFString>>::from_void(event_paths);
+    let event_paths = unsafe { CFArray::<CFDictionary<CFString>>::from_void(event_paths) };
     let info = info as *const StreamContextInfo;
-    let event_handler = &(*info).event_handler;
+    let event_handler = unsafe { &(*info).event_handler };
 
     for idx in 0..num_events {
-        if let Some(raw_event) = Some((
-            event_paths.get_unchecked(idx as CFIndex),
-            *event_flags.add(idx),
-            *event_ids.add(idx),
+        match Ok((
+            unsafe { event_paths.get_unchecked(idx as CFIndex) },
+            unsafe { *event_flags.add(idx) },
+            unsafe { *event_ids.add(idx) },
         ))
-        .map(|(extended, raw_flags, id)| {
-            let path = CFString::from_void(*extended.get(&*kFSEventStreamEventExtendedDataPathKey));
-            let inode = CFNumber::from_void(*extended.get(&*kFSEventStreamEventExtendedFileIDKey));
-            (
+        .and_then(|(extended, raw_flags, id)| {
+            let path = unsafe {
+                CFString::from_void(*extended.get(&*kFSEventStreamEventExtendedDataPathKey))
+            };
+            let inode = unsafe {
+                CFNumber::from_void(*extended.get(&*kFSEventStreamEventExtendedFileIDKey))
+            };
+            Ok((
                 PathBuf::from((*path).to_string()),
-                inode.to_i64().expect("inode to be i64"),
+                inode.to_i64().ok_or(CallbackError::ToI64)?,
                 raw_flags,
                 id,
-            )
+            ))
         })
         .and_then(|(path, inode, raw_flags, id)| {
-            StreamFlags::from_bits(raw_flags).map(|flags| RawEvent {
-                path,
-                inode,
-                flags,
-                raw_flags,
-                id,
-            })
+            StreamFlags::from_bits(raw_flags)
+                .ok_or(CallbackError::ParseFlags)
+                .map(|flags| RawEvent {
+                    path,
+                    inode,
+                    flags,
+                    raw_flags,
+                    id,
+                })
         }) {
+            Ok(raw_event) =>
             // Send event out.
-            if let Err(e) = event_handler.try_send(raw_event) {
-                error!(
-                    "error while sending raw event from low-level callback: {}",
-                    e
-                );
+            {
+                if let Err(e) = event_handler.try_send(raw_event) {
+                    error!("Unable to raw event from low-level callback: {}", e);
+                }
             }
+            Err(CallbackError::ToI64) => error!("Unable to convert inode field to i64"),
+            Err(CallbackError::ParseFlags) => error!("Unable to parse flags"),
         }
     }
 }
