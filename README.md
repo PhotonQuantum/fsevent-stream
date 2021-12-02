@@ -9,7 +9,7 @@ An attempt to make fsevent api easier to use.
 ## Planned features
 
 - [ ] Ergonomic stream-based apis with debouncing and deduplication.
-- [ ] Safe wrappers around ffi calls to work directly on low level events.
+- [x] Safe wrappers around ffi calls to work directly on low level events. (See [low-level module](src/low_level.rs))
 
 ## Acknowledgement
 

@@ -1,5 +1,4 @@
-mod flags;
-pub mod fsevent;
+pub mod low_level;
 #[macro_use]
-pub mod raw;
+pub mod sys;
 mod observer;

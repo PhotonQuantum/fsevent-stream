@@ -1,35 +1,36 @@
 use std::fmt::{Display, Formatter};
 
-use crate::raw as fs;
+use crate::sys;
 
 bitflags::bitflags! {
-  #[repr(C)]
-  pub struct StreamFlags: u32 {
-    const NONE = fs::kFSEventStreamEventFlagNone;
-    const MUST_SCAN_SUBDIRS = fs::kFSEventStreamEventFlagMustScanSubDirs;
-    const USER_DROPPED = fs::kFSEventStreamEventFlagUserDropped;
-    const KERNEL_DROPPED = fs::kFSEventStreamEventFlagKernelDropped;
-    const IDS_WRAPPED = fs::kFSEventStreamEventFlagEventIdsWrapped;
-    const HISTORY_DONE = fs::kFSEventStreamEventFlagHistoryDone;
-    const ROOT_CHANGED = fs::kFSEventStreamEventFlagRootChanged;
-    const MOUNT = fs::kFSEventStreamEventFlagMount;
-    const UNMOUNT = fs::kFSEventStreamEventFlagUnmount;
-    const ITEM_CREATED = fs::kFSEventStreamEventFlagItemCreated;
-    const ITEM_REMOVED = fs::kFSEventStreamEventFlagItemRemoved;
-    const INODE_META_MOD = fs::kFSEventStreamEventFlagItemInodeMetaMod;
-    const ITEM_RENAMED = fs::kFSEventStreamEventFlagItemRenamed;
-    const ITEM_MODIFIED = fs::kFSEventStreamEventFlagItemModified;
-    const FINDER_INFO_MOD = fs::kFSEventStreamEventFlagItemFinderInfoMod;
-    const ITEM_CHANGE_OWNER = fs::kFSEventStreamEventFlagItemChangeOwner;
-    const ITEM_XATTR_MOD = fs::kFSEventStreamEventFlagItemXattrMod;
-    const IS_FILE = fs::kFSEventStreamEventFlagItemIsFile;
-    const IS_DIR = fs::kFSEventStreamEventFlagItemIsDir;
-    const IS_SYMLINK = fs::kFSEventStreamEventFlagItemIsSymlink;
-    const OWN_EVENT = fs::kFSEventStreamEventFlagOwnEvent;
-    const IS_HARDLINK = fs::kFSEventStreamEventFlagItemIsHardlink;
-    const IS_LAST_HARDLINK = fs::kFSEventStreamEventFlagItemIsLastHardlink;
-    const ITEM_CLONED = fs::kFSEventStreamEventFlagItemCloned;
-  }
+    /// Known `FSEvents` event flags.
+    #[repr(C)]
+    pub struct StreamFlags: u32 {
+        const NONE = sys::kFSEventStreamEventFlagNone;
+        const MUST_SCAN_SUBDIRS = sys::kFSEventStreamEventFlagMustScanSubDirs;
+        const USER_DROPPED = sys::kFSEventStreamEventFlagUserDropped;
+        const KERNEL_DROPPED = sys::kFSEventStreamEventFlagKernelDropped;
+        const IDS_WRAPPED = sys::kFSEventStreamEventFlagEventIdsWrapped;
+        const HISTORY_DONE = sys::kFSEventStreamEventFlagHistoryDone;
+        const ROOT_CHANGED = sys::kFSEventStreamEventFlagRootChanged;
+        const MOUNT = sys::kFSEventStreamEventFlagMount;
+        const UNMOUNT = sys::kFSEventStreamEventFlagUnmount;
+        const ITEM_CREATED = sys::kFSEventStreamEventFlagItemCreated;
+        const ITEM_REMOVED = sys::kFSEventStreamEventFlagItemRemoved;
+        const INODE_META_MOD = sys::kFSEventStreamEventFlagItemInodeMetaMod;
+        const ITEM_RENAMED = sys::kFSEventStreamEventFlagItemRenamed;
+        const ITEM_MODIFIED = sys::kFSEventStreamEventFlagItemModified;
+        const FINDER_INFO_MOD = sys::kFSEventStreamEventFlagItemFinderInfoMod;
+        const ITEM_CHANGE_OWNER = sys::kFSEventStreamEventFlagItemChangeOwner;
+        const ITEM_XATTR_MOD = sys::kFSEventStreamEventFlagItemXattrMod;
+        const IS_FILE = sys::kFSEventStreamEventFlagItemIsFile;
+        const IS_DIR = sys::kFSEventStreamEventFlagItemIsDir;
+        const IS_SYMLINK = sys::kFSEventStreamEventFlagItemIsSymlink;
+        const OWN_EVENT = sys::kFSEventStreamEventFlagOwnEvent;
+        const IS_HARDLINK = sys::kFSEventStreamEventFlagItemIsHardlink;
+        const IS_LAST_HARDLINK = sys::kFSEventStreamEventFlagItemIsLastHardlink;
+        const ITEM_CLONED = sys::kFSEventStreamEventFlagItemCloned;
+    }
 }
 
 impl Display for StreamFlags {

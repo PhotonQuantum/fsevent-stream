@@ -4,8 +4,8 @@ use std::time::Duration;
 use log::info;
 use tokio_stream::StreamExt;
 
-use fsevent_better::fsevent::raw_event_stream;
-use fsevent_better::raw::{
+use fsevent_better::low_level::raw_event_stream;
+use fsevent_better::sys::{
     kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
     kFSEventStreamEventIdSinceNow,
 };

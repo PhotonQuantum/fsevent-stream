@@ -1,3 +1,7 @@
+//! Raw `FSEvents` ffi bindings.
+//!
+//! Some of the bindings are lightly wrapped to adapt to Rust's ownership model and provide a more ergonomic experience.
+
 #![allow(
     non_snake_case,
     non_upper_case_globals,
@@ -39,6 +43,7 @@ impl CFRunLoopExt for CFRunLoop {
     }
 }
 
+#[doc(hidden)]
 #[repr(C)]
 pub struct __FSEventStream {
     _data: [u8; 0],
@@ -47,6 +52,9 @@ pub struct __FSEventStream {
 
 pub type FSEventStreamRef = *mut __FSEventStream;
 
+/// An ergonomic wrapper of [`FSEventStreamRef`](FSEventStreamRef).
+///
+/// This wrapper complies with Rust's ownership model, and releases its resource when dropped.
 pub struct FSEventStream(FSEventStreamRef);
 
 // Safety:
@@ -119,7 +127,8 @@ pub struct FSEventStreamContext {
     pub copy_description: Option<CFAllocatorCopyDescriptionCallBack>,
 }
 
-/// Generate a callback that free the context when the stream created by `FSEventStreamCreate` is released.
+/// Generate a callback that free the context when the stream created by [`FSEventStream::new`](FSEventStream::new) is released.
+///
 /// Usage: `impl_release_callback!(release_ctx, YourCtxType)`
 // Safety:
 // - The [documentation] for `FSEventStreamContext` states that `release` is only
@@ -146,8 +155,9 @@ macro_rules! impl_release_callback {
 }
 
 impl FSEventStreamContext {
-    /// Create a new `FSEventStreamContext`.
-    /// `release_callback` can be constructed using `impl_release_callback` macro.
+    /// Create a new [`FSEventStreamContext`](FSEventStreamContext).
+    ///
+    /// `release_callback` can be constructed using [`impl_release_callback`](impl_release_callback) macro.
     pub fn new<T>(ctx: T, release_callback: CFAllocatorReleaseCallBack) -> Self {
         let ctx = Box::into_raw(Box::new(ctx));
         Self {
@@ -161,7 +171,7 @@ impl FSEventStreamContext {
 }
 
 impl FSEventStream {
-    /// Create a new raw `FSEventStream`.
+    /// Create a new raw [`FSEventStream`](FSEventStream).
     ///
     /// # Errors
     /// Return error when there's any invalid path in `paths_to_watch`.
