@@ -46,14 +46,22 @@ use crate::raw::{
 /// An owned permission to stop a `RawEventStream` and terminate its backing `RunLoop`.
 ///
 /// A `RawEventStreamHandler` *detaches* the associated Stream and `RunLoop` when it is dropped, which
-/// means that there is no longer any handle to them and no way to `abort` them, which may cause
-/// memory leaks.
+/// means that there is no longer any handle to them and no way to `abort` them.
+///
+/// Dropping the handler without first calling [`abort`](RawEventStreamHandler::abort) is not
+/// recommended because this leaves a spawned thread behind and causes memory leaks.
 pub struct RawEventStreamHandler {
     runloop: Option<(CFRunLoop, thread::JoinHandle<()>, AbortHandle)>,
 }
 
+// Safety:
+// - According to the Apple documentation, it's safe to move `CFRef`s across threads.
+//   https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/ThreadSafetySummary/ThreadSafetySummary.html
+unsafe impl Send for RawEventStreamHandler {}
+
 impl RawEventStreamHandler {
-    /// Stop a `RawEventStream` and terminate its backing `RunLoop`.
+    /// Stop a `RawEventStream` and terminate its backing `RunLoop`. Calling this method has no
+    /// extra effect and won't cause any panic, error, or undefined behavior.
     pub fn abort(&mut self) {
         if let Some((runloop, thread_handle, abort_handle)) = self.runloop.take() {
             let (tx, rx) = channel();
