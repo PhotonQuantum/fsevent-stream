@@ -1,4 +1,9 @@
-#![allow(non_snake_case, non_upper_case_globals, clippy::unreadable_literal)]
+#![allow(
+    non_snake_case,
+    non_upper_case_globals,
+    clippy::unreadable_literal,
+    clippy::declare_interior_mutable_const
+)]
 
 use std::ffi::c_void;
 use std::io;
@@ -16,6 +21,7 @@ use core_foundation::date::CFTimeInterval;
 use core_foundation::runloop::{CFRunLoop, CFRunLoopIsWaiting, CFRunLoopMode, CFRunLoopRef};
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::url::{kCFURLPOSIXPathStyle, CFURL};
+use once_cell::unsync::Lazy;
 
 fn str_path_to_cfstring_ref(source: &Path) -> io::Result<CFString> {
     CFURL::from_path(source, source.is_dir())
@@ -98,6 +104,11 @@ pub const kFSEventStreamEventFlagOwnEvent: FSEventStreamEventFlags = 0x00080000;
 pub const kFSEventStreamEventFlagItemIsHardlink: FSEventStreamEventFlags = 0x00100000;
 pub const kFSEventStreamEventFlagItemIsLastHardlink: FSEventStreamEventFlags = 0x00200000;
 pub const kFSEventStreamEventFlagItemCloned: FSEventStreamEventFlags = 0x00400000;
+
+pub const kFSEventStreamEventExtendedDataPathKey: Lazy<CFString> =
+    Lazy::new(|| CFString::new("path"));
+pub const kFSEventStreamEventExtendedFileIDKey: Lazy<CFString> =
+    Lazy::new(|| CFString::new("fileID"));
 
 #[repr(C)]
 pub struct FSEventStreamContext {

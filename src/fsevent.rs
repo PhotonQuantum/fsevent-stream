@@ -9,10 +9,10 @@
 //! For more information see the [`FSEvents` API reference][ref].
 //!
 //! [ref]: https://developer.apple.com/library/mac/documentation/Darwin/Reference/FSEvents_Ref/
+#![allow(clippy::borrow_interior_mutable_const, clippy::cast_possible_wrap)]
 
-use std::ffi::{c_void, CStr};
+use std::ffi::c_void;
 use std::io;
-use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::mpsc::channel;
@@ -20,10 +20,15 @@ use std::task::{Context, Poll};
 use std::thread;
 use std::time::Duration;
 
+use core_foundation::array::CFArray;
+use core_foundation::base::{CFIndex, FromVoid};
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::number::CFNumber;
 use core_foundation::runloop::{kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode, CFRunLoop};
+use core_foundation::string::CFString;
 use futures::stream::{abortable, AbortHandle, Abortable};
 use futures::{Stream, StreamExt};
-use log::error;
+use log::{debug, error};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::flags::StreamFlags;
@@ -31,8 +36,10 @@ use crate::impl_release_callback;
 use crate::observer::create_oneshot_observer;
 use crate::raw as fs;
 use crate::raw::{
-    CFRunLoopExt, FSEventStream, FSEventStreamContext, FSEventStreamCreateFlags,
-    FSEventStreamEventFlags, FSEventStreamEventId,
+    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamCreateFlagUseExtendedData,
+    kFSEventStreamEventExtendedDataPathKey, kFSEventStreamEventExtendedFileIDKey, CFRunLoopExt,
+    FSEventStream, FSEventStreamContext, FSEventStreamCreateFlags, FSEventStreamEventFlags,
+    FSEventStreamEventId,
 };
 
 /// An owned permission to stop a `RawEventStream` and terminate its backing `RunLoop`.
@@ -72,6 +79,7 @@ impl RawEventStreamHandler {
 #[derive(Debug, Clone)]
 pub struct RawEvent {
     pub path: PathBuf,
+    pub inode: i64,
     pub flags: StreamFlags,
     pub raw_flags: FSEventStreamEventFlags,
     pub id: FSEventStreamEventId,
@@ -127,13 +135,14 @@ pub fn raw_event_stream<P: AsRef<Path>>(
 
     let stream_context = FSEventStreamContext::new(context, release_context);
 
+    // We must append some additional flags because our callback parse them so
     let mut stream = FSEventStream::new(
         callback,
         &stream_context,
         paths_to_watch,
         since_when,
         latency,
-        flags,
+        flags | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagUseExtendedData,
     )?;
 
     // channel to pass runloop around
@@ -197,25 +206,32 @@ unsafe fn callback_impl(
     event_flags: *const fs::FSEventStreamEventFlags, // const FSEventStreamEventFlags eventFlags[]
     event_ids: *const fs::FSEventStreamEventId,      // const FSEventStreamEventId eventIds[]
 ) {
-    let event_paths = event_paths as *const *const c_char;
+    debug!("Received {} event(s)", num_events);
+
+    let event_paths = CFArray::<CFDictionary<CFString>>::from_void(event_paths);
     let info = info as *const StreamContextInfo;
     let event_handler = &(*info).event_handler;
 
     for idx in 0..num_events {
         if let Some(raw_event) = Some((
-            *event_paths.add(idx),
+            event_paths.get_unchecked(idx as CFIndex),
             *event_flags.add(idx),
             *event_ids.add(idx),
         ))
-        .and_then(|(path, raw_flags, id)| {
-            CStr::from_ptr(path)
-                .to_str()
-                .ok()
-                .map(|path| (PathBuf::from(path), raw_flags, id))
+        .map(|(extended, raw_flags, id)| {
+            let path = CFString::from_void(*extended.get(&*kFSEventStreamEventExtendedDataPathKey));
+            let inode = CFNumber::from_void(*extended.get(&*kFSEventStreamEventExtendedFileIDKey));
+            (
+                PathBuf::from((*path).to_string()),
+                inode.to_i64().expect("inode to be i64"),
+                raw_flags,
+                id,
+            )
         })
-        .and_then(|(path, raw_flags, id)| {
+        .and_then(|(path, inode, raw_flags, id)| {
             StreamFlags::from_bits(raw_flags).map(|flags| RawEvent {
                 path,
+                inode,
                 flags,
                 raw_flags,
                 id,

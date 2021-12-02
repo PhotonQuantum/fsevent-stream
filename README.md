@@ -1,6 +1,6 @@
 # fsevent-better
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better?ref=badge_shield)
 
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better?ref=badge_shield)
 
 > WIP
 
