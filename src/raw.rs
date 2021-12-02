@@ -13,7 +13,7 @@ use core_foundation::base::{
     CFAllocatorReleaseCallBack, CFAllocatorRetainCallBack, CFIndex, TCFType,
 };
 use core_foundation::date::CFTimeInterval;
-use core_foundation::runloop::{CFRunLoop, CFRunLoopMode, CFRunLoopRef};
+use core_foundation::runloop::{CFRunLoop, CFRunLoopIsWaiting, CFRunLoopMode, CFRunLoopRef};
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::url::{kCFURLPOSIXPathStyle, CFURL};
 
@@ -21,11 +21,6 @@ pub fn str_path_to_cfstring_ref(source: &Path) -> io::Result<CFString> {
     CFURL::from_path(source, source.is_dir())
         .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
         .map(|path| path.absolute().get_file_system_path(kCFURLPOSIXPathStyle))
-}
-
-extern "C" {
-    /// Indicates whether the run loop is waiting for an event.
-    fn CFRunLoopIsWaiting(runloop: CFRunLoopRef) -> Boolean;
 }
 
 pub trait CFRunLoopExt {
@@ -125,6 +120,13 @@ pub struct FSEventStreamContext {
 macro_rules! impl_release_callback {
     ($name: ident, $ctx_ty: ty) => {
         extern "C" fn $name(ctx: *mut std::ffi::c_void) {
+            unsafe {
+                drop(Box::from_raw(ctx as *mut $ctx_ty));
+            }
+        }
+    };
+    ($name: ident, const $ctx_ty: ty) => {
+        extern "C" fn $name(ctx: *const std::ffi::c_void) {
             unsafe {
                 drop(Box::from_raw(ctx as *mut $ctx_ty));
             }

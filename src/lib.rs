@@ -1,5 +1,5 @@
-mod events;
 mod flags;
-mod fsevent;
+pub mod fsevent;
 #[macro_use]
 pub mod raw;
+mod observer;

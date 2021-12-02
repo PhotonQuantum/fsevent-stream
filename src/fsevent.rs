@@ -17,31 +17,70 @@ use std::io;
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
+use core_foundation::runloop::{kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode, CFRunLoop};
+use futures::stream::{abortable, AbortHandle, Abortable};
+use tokio_stream::wrappers::ReceiverStream;
 
-use crate::events::EventHandler;
 use crate::flags::StreamFlags;
 use crate::impl_release_callback;
+use crate::observer::create_oneshot_observer;
 use crate::raw as fs;
 use crate::raw::{
     CFRunLoopExt, FSEventStream, FSEventStreamContext, FSEventStreamCreateFlags,
-    FSEventStreamEventId,
+    FSEventStreamEventFlags, FSEventStreamEventId,
 };
 
-/// FSEvents-based `Watcher` implementation
-pub struct FsEventWatcher {
-    runloop: Option<(CFRunLoop, thread::JoinHandle<()>)>,
+/// An owned permission to stop a RawEventStream and terminate its backing RunLoop.
+///
+/// A `RawEventStreamHandler` *detaches* the associated Stream and RunLoop when it is dropped, which
+/// means that there is no longer any handle to them and no way to `abort` them, which may cause
+/// memory leaks.
+pub struct RawEventStreamHandler {
+    runloop: Option<(CFRunLoop, thread::JoinHandle<()>, AbortHandle)>,
 }
 
-// unsafe impl Send for FsEventWatcher {}
-// unsafe impl Sync for FsEventWatcher {}
+impl RawEventStreamHandler {
+    /// Stop a RawEventStream and terminate its backing RunLoop.
+    pub fn abort(&mut self) {
+        if let Some((runloop, thread_handle, abort_handle)) = self.runloop.take() {
+            let (tx, rx) = channel();
+            let observer = create_oneshot_observer(kCFRunLoopBeforeWaiting, tx);
+            runloop.add_observer(&observer, unsafe { kCFRunLoopDefaultMode });
+
+            if !runloop.is_waiting() {
+                // Wait the RunLoop to enter Waiting state.
+                rx.recv().expect("channel to receive BeforeWaiting signal");
+            }
+
+            runloop.remove_observer(&observer, unsafe { kCFRunLoopDefaultMode });
+            runloop.stop();
+
+            // Wait for the thread to shut down.
+            thread_handle.join().expect("thread to shut down");
+
+            // Abort the stream.
+            abort_handle.abort();
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RawEvent {
+    path: PathBuf,
+    flags: StreamFlags,
+    raw_flags: FSEventStreamEventFlags,
+    id: FSEventStreamEventId,
+}
+
+pub struct RawEventStream {
+    stream: Abortable<ReceiverStream<RawEvent>>,
+}
 
 struct StreamContextInfo {
-    event_handler: Arc<Mutex<dyn EventHandler>>,
+    event_handler: tokio::sync::mpsc::Sender<RawEvent>,
 }
 
 impl_release_callback!(release_context, StreamContextInfo);
@@ -56,68 +95,60 @@ impl<T> SendWrapper<T> {
     }
 }
 
-impl FsEventWatcher {
-    fn stop(&mut self) {
-        if let Some((runloop, thread_handle)) = self.runloop.take() {
-            while !runloop.is_waiting() {
-                thread::yield_now();
-            }
-            runloop.stop();
+pub fn raw_event_stream<P: AsRef<Path>>(
+    paths_to_watch: impl IntoIterator<Item = P>,
+    since_when: FSEventStreamEventId,
+    latency: Duration,
+    flags: FSEventStreamCreateFlags,
+) -> io::Result<(RawEventStream, RawEventStreamHandler)> {
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(1024);
 
-            // Wait for the thread to shut down.
-            thread_handle.join().expect("thread to shut down");
-        }
-    }
+    // We need to associate the stream context with our callback in order to propagate events
+    // to the rest of the system. This will be owned by the stream, and will be freed when the
+    // stream is closed. This means we will leak the context if we panic before reacing
+    // `FSEventStreamRelease`.
+    let context = StreamContextInfo {
+        event_handler: event_tx,
+    };
 
-    fn new<P: AsRef<Path>>(
-        event_handler: impl EventHandler,
-        paths_to_watch: impl IntoIterator<Item = P>,
-        since_when: FSEventStreamEventId,
-        latency: Duration,
-        flags: FSEventStreamCreateFlags,
-    ) -> io::Result<Self> {
-        // We need to associate the stream context with our callback in order to propagate events
-        // to the rest of the system. This will be owned by the stream, and will be freed when the
-        // stream is closed. This means we will leak the context if we panic before reacing
-        // `FSEventStreamRelease`.
-        let context = StreamContextInfo {
-            event_handler: Arc::new(Mutex::new(event_handler)),
-        };
+    let stream_context = FSEventStreamContext::new(context, release_context);
 
-        let stream_context = FSEventStreamContext::new(context, release_context);
+    let mut stream = FSEventStream::new(
+        callback,
+        &stream_context,
+        paths_to_watch,
+        since_when,
+        latency,
+        flags,
+    )?;
 
-        let mut stream = FSEventStream::new(
-            callback,
-            &stream_context,
-            paths_to_watch,
-            since_when,
-            latency,
-            flags,
-        )?;
+    // channel to pass runloop around
+    let (runloop_tx, runloop_rx) = channel();
 
-        // channel to pass runloop around
-        let (tx, rx) = channel();
+    let thread_handle = thread::spawn(move || {
+        let current_runloop = CFRunLoop::get_current();
 
-        let thread_handle = thread::spawn(move || {
-            let current_runloop = CFRunLoop::get_current();
+        stream.schedule(&current_runloop, unsafe { kCFRunLoopDefaultMode });
+        stream.start();
 
-            stream.schedule(&current_runloop, unsafe { kCFRunLoopDefaultMode });
-            stream.start();
+        // the calling to CFRunLoopRun will be terminated by CFRunLoopStop call in drop()
+        // SAFETY: `CF_REF` is thread-safe.
+        runloop_tx
+            .send(unsafe { SendWrapper::new(current_runloop) })
+            .expect("Unable to send runloop to watcher");
 
-            // the calling to CFRunLoopRun will be terminated by CFRunLoopStop call in drop()
-            // SAFETY: `CF_REF` is thread-safe.
-            tx.send(unsafe { SendWrapper::new(current_runloop) })
-                .expect("Unable to send runloop to watcher");
+        CFRunLoop::run_current();
+        stream.stop();
+        stream.invalidate();
+    });
 
-            CFRunLoop::run_current();
-            stream.stop();
-            stream.invalidate();
-        });
-
-        Ok(Self {
-            runloop: Some((rx.recv().unwrap().0, thread_handle)),
-        })
-    }
+    let (stream, stream_handle) = abortable(ReceiverStream::new(event_rx));
+    Ok((
+        RawEventStream { stream },
+        RawEventStreamHandler {
+            runloop: Some((runloop_rx.recv().unwrap().0, thread_handle, stream_handle)),
+        },
+    ))
 }
 
 extern "C" fn callback(
@@ -146,34 +177,35 @@ unsafe fn callback_impl(
     num_events: usize,                               // size_t numEvents
     event_paths: *mut c_void,                        // void *eventPaths
     event_flags: *const fs::FSEventStreamEventFlags, // const FSEventStreamEventFlags eventFlags[]
-    _event_ids: *const fs::FSEventStreamEventId,     // const FSEventStreamEventId eventIds[]
+    event_ids: *const fs::FSEventStreamEventId,      // const FSEventStreamEventId eventIds[]
 ) {
     let event_paths = event_paths as *const *const c_char;
     let info = info as *const StreamContextInfo;
     let event_handler = &(*info).event_handler;
 
-    for p in 0..num_events {
-        let path = CStr::from_ptr(*event_paths.add(p))
-            .to_str()
-            .expect("Invalid UTF8 string.");
-        let path = PathBuf::from(path);
-
-        let flag = *event_flags.add(p);
-        let flag = StreamFlags::from_bits(flag).unwrap_or_else(|| {
-            panic!("Unable to decode StreamFlags: {}", flag);
-        });
-
-        // for ev in translate_flags(flag, true).into_iter() {
-        //     let ev = ev.add_path(path.clone());
-        //     let mut event_handler = event_handler.lock().expect("lock not to be poisoned");
-        //     event_handler.handle_event(ev);
-        // }
-    }
-}
-
-impl Drop for FsEventWatcher {
-    fn drop(&mut self) {
-        self.stop();
+    for idx in 0..num_events {
+        if let Some(raw_event) = Some((
+            *event_paths.add(idx),
+            *event_flags.add(idx),
+            *event_ids.add(idx),
+        ))
+        .and_then(|(path, raw_flags, id)| {
+            CStr::from_ptr(path)
+                .to_str()
+                .ok()
+                .map(|path| (PathBuf::from(path), raw_flags, id))
+        })
+        .and_then(|(path, raw_flags, id)| {
+            StreamFlags::from_bits(raw_flags).map(|flags| RawEvent {
+                path,
+                flags,
+                raw_flags,
+                id,
+            })
+        }) {
+            // Send event out.
+            drop(event_handler.send(raw_event));
+        }
     }
 }
 
