@@ -1,3 +1,5 @@
+#![allow(clippy::module_name_repetitions)]
+
 use std::ffi::c_void;
 use std::sync::mpsc::Sender;
 
@@ -19,9 +21,9 @@ extern "C" fn observer_callback(
     activity: CFRunLoopActivity,
     info: *mut c_void,
 ) {
-    let ctx = unsafe { &*(info as *mut ObserverContextInfo) };
+    let ctx: &ObserverContextInfo = unsafe { &*(info.cast()) };
     if (ctx.interest & activity) == activity {
-        drop(ctx.tx.send(activity));
+        let _ = ctx.tx.send(activity);
     }
 }
 
@@ -31,7 +33,7 @@ pub fn create_oneshot_observer(
 ) -> CFRunLoopObserver {
     let ctx = Box::into_raw(Box::new(CFRunLoopObserverContext {
         version: 0,
-        info: Box::into_raw(Box::new(ObserverContextInfo { interest, tx })) as *mut c_void,
+        info: Box::into_raw(Box::new(ObserverContextInfo { interest, tx })).cast(),
         retain: None,
         release: Some(release_observer_ctx),
         copyDescription: None,

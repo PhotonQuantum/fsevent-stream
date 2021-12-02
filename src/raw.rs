@@ -1,4 +1,4 @@
-#![allow(non_snake_case, non_upper_case_globals)]
+#![allow(non_snake_case, non_upper_case_globals, clippy::unreadable_literal)]
 
 use std::ffi::c_void;
 use std::io;
@@ -17,7 +17,7 @@ use core_foundation::runloop::{CFRunLoop, CFRunLoopIsWaiting, CFRunLoopMode, CFR
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::url::{kCFURLPOSIXPathStyle, CFURL};
 
-pub fn str_path_to_cfstring_ref(source: &Path) -> io::Result<CFString> {
+fn str_path_to_cfstring_ref(source: &Path) -> io::Result<CFString> {
     CFURL::from_path(source, source.is_dir())
         .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
         .map(|path| path.absolute().get_file_system_path(kCFURLPOSIXPathStyle))
@@ -135,13 +135,13 @@ macro_rules! impl_release_callback {
 }
 
 impl FSEventStreamContext {
-    /// Create a new FSEventStreamContext.
+    /// Create a new `FSEventStreamContext`.
     /// `release_callback` can be constructed using `impl_release_callback` macro.
     pub fn new<T>(ctx: T, release_callback: CFAllocatorReleaseCallBack) -> Self {
         let ctx = Box::into_raw(Box::new(ctx));
         Self {
             version: 0,
-            info: ctx as *mut c_void,
+            info: ctx.cast(),
             retain: None,
             release: Some(release_callback),
             copy_description: None,
@@ -150,6 +150,10 @@ impl FSEventStreamContext {
 }
 
 impl FSEventStream {
+    /// Create a new raw `FSEventStream`.
+    ///
+    /// # Errors
+    /// Return error when there's any invalid path in `paths_to_watch`.
     pub fn new<P: AsRef<Path>>(
         callback: FSEventStreamCallback,
         context: &FSEventStreamContext,
@@ -157,7 +161,7 @@ impl FSEventStream {
         since_when: FSEventStreamEventId,
         latency: Duration,
         flags: FSEventStreamCreateFlags,
-    ) -> io::Result<FSEventStream> {
+    ) -> io::Result<Self> {
         let cf_paths: Vec<_> = paths_to_watch
             .into_iter()
             .map(|item| str_path_to_cfstring_ref(item.as_ref()))
@@ -180,7 +184,7 @@ impl FSEventStream {
     }
     pub fn schedule(&mut self, run_loop: &CFRunLoop, run_loop_mode: CFStringRef) {
         unsafe {
-            FSEventStreamScheduleWithRunLoop(self.0, run_loop.as_concrete_TypeRef(), run_loop_mode)
+            FSEventStreamScheduleWithRunLoop(self.0, run_loop.as_concrete_TypeRef(), run_loop_mode);
         }
     }
     pub fn unschedule(&mut self, run_loop: &CFRunLoop, run_loop_mode: CFStringRef) {
@@ -189,7 +193,7 @@ impl FSEventStream {
                 self.0,
                 run_loop.as_concrete_TypeRef(),
                 run_loop_mode,
-            )
+            );
         }
     }
     pub fn start(&mut self) -> bool {

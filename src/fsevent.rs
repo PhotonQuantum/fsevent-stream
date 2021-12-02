@@ -1,27 +1,29 @@
-//! Watcher implementation for Darwin's FSEvents API
+//! Watcher implementation for Darwin's `FSEvents` API
 //!
-//! The FSEvents API provides a mechanism to notify clients about directories they ought to re-scan
+//! The `FSEvents` API provides a mechanism to notify clients about directories they ought to re-scan
 //! in order to keep their internal data structures up-to-date with respect to the true state of
 //! the file system. (For example, when files or directories are created, modified, or removed.) It
 //! sends these notifications "in bulk", possibly notifying the client of changes to several
 //! directories in a single callback.
 //!
-//! For more information see the [FSEvents API reference][ref].
+//! For more information see the [`FSEvents` API reference][ref].
 //!
 //! [ref]: https://developer.apple.com/library/mac/documentation/Darwin/Reference/FSEvents_Ref/
-
-#![allow(non_upper_case_globals, dead_code)]
 
 use std::ffi::{c_void, CStr};
 use std::io;
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::mpsc::channel;
+use std::task::{Context, Poll};
 use std::thread;
 use std::time::Duration;
 
 use core_foundation::runloop::{kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode, CFRunLoop};
 use futures::stream::{abortable, AbortHandle, Abortable};
+use futures::{Stream, StreamExt};
+use log::error;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::flags::StreamFlags;
@@ -33,9 +35,9 @@ use crate::raw::{
     FSEventStreamEventFlags, FSEventStreamEventId,
 };
 
-/// An owned permission to stop a RawEventStream and terminate its backing RunLoop.
+/// An owned permission to stop a `RawEventStream` and terminate its backing `RunLoop`.
 ///
-/// A `RawEventStreamHandler` *detaches* the associated Stream and RunLoop when it is dropped, which
+/// A `RawEventStreamHandler` *detaches* the associated Stream and `RunLoop` when it is dropped, which
 /// means that there is no longer any handle to them and no way to `abort` them, which may cause
 /// memory leaks.
 pub struct RawEventStreamHandler {
@@ -43,7 +45,7 @@ pub struct RawEventStreamHandler {
 }
 
 impl RawEventStreamHandler {
-    /// Stop a RawEventStream and terminate its backing RunLoop.
+    /// Stop a `RawEventStream` and terminate its backing `RunLoop`.
     pub fn abort(&mut self) {
         if let Some((runloop, thread_handle, abort_handle)) = self.runloop.take() {
             let (tx, rx) = channel();
@@ -69,14 +71,22 @@ impl RawEventStreamHandler {
 
 #[derive(Debug, Clone)]
 pub struct RawEvent {
-    path: PathBuf,
-    flags: StreamFlags,
-    raw_flags: FSEventStreamEventFlags,
-    id: FSEventStreamEventId,
+    pub path: PathBuf,
+    pub flags: StreamFlags,
+    pub raw_flags: FSEventStreamEventFlags,
+    pub id: FSEventStreamEventId,
 }
 
 pub struct RawEventStream {
     stream: Abortable<ReceiverStream<RawEvent>>,
+}
+
+impl Stream for RawEventStream {
+    type Item = RawEvent;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.stream.poll_next_unpin(cx)
+    }
 }
 
 struct StreamContextInfo {
@@ -90,11 +100,15 @@ struct SendWrapper<T>(T);
 unsafe impl<T> Send for SendWrapper<T> {}
 
 impl<T> SendWrapper<T> {
-    unsafe fn new(t: T) -> Self {
-        SendWrapper(t)
+    const unsafe fn new(t: T) -> Self {
+        Self(t)
     }
 }
 
+/// Create a new `RawEventStream` and `RawEventStreamHandler` pair.
+///
+/// # Errors
+/// Return error when there's any invalid path in `paths_to_watch`.
 pub fn raw_event_stream<P: AsRef<Path>>(
     paths_to_watch: impl IntoIterator<Item = P>,
     since_when: FSEventStreamEventId,
@@ -135,7 +149,7 @@ pub fn raw_event_stream<P: AsRef<Path>>(
         // SAFETY: `CF_REF` is thread-safe.
         runloop_tx
             .send(unsafe { SendWrapper::new(current_runloop) })
-            .expect("Unable to send runloop to watcher");
+            .expect("send runloop to stream");
 
         CFRunLoop::run_current();
         stream.stop();
@@ -146,7 +160,11 @@ pub fn raw_event_stream<P: AsRef<Path>>(
     Ok((
         RawEventStream { stream },
         RawEventStreamHandler {
-            runloop: Some((runloop_rx.recv().unwrap().0, thread_handle, stream_handle)),
+            runloop: Some((
+                runloop_rx.recv().expect("receive runloop from worker").0,
+                thread_handle,
+                stream_handle,
+            )),
         },
     ))
 }
@@ -167,7 +185,7 @@ extern "C" fn callback(
             event_paths,
             event_flags,
             event_ids,
-        )
+        );
     }
 }
 
@@ -204,7 +222,12 @@ unsafe fn callback_impl(
             })
         }) {
             // Send event out.
-            drop(event_handler.send(raw_event));
+            if let Err(e) = event_handler.try_send(raw_event) {
+                error!(
+                    "error while sending raw event from low-level callback: {}",
+                    e
+                );
+            }
         }
     }
 }

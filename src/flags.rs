@@ -34,73 +34,73 @@ bitflags::bitflags! {
 
 impl Display for StreamFlags {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        if self.contains(StreamFlags::MUST_SCAN_SUBDIRS) {
+        if self.contains(Self::MUST_SCAN_SUBDIRS) {
             let _d = write!(f, "MUST_SCAN_SUBDIRS ");
         }
-        if self.contains(StreamFlags::USER_DROPPED) {
+        if self.contains(Self::USER_DROPPED) {
             let _d = write!(f, "USER_DROPPED ");
         }
-        if self.contains(StreamFlags::KERNEL_DROPPED) {
+        if self.contains(Self::KERNEL_DROPPED) {
             let _d = write!(f, "KERNEL_DROPPED ");
         }
-        if self.contains(StreamFlags::IDS_WRAPPED) {
+        if self.contains(Self::IDS_WRAPPED) {
             let _d = write!(f, "IDS_WRAPPED ");
         }
-        if self.contains(StreamFlags::HISTORY_DONE) {
+        if self.contains(Self::HISTORY_DONE) {
             let _d = write!(f, "HISTORY_DONE ");
         }
-        if self.contains(StreamFlags::ROOT_CHANGED) {
+        if self.contains(Self::ROOT_CHANGED) {
             let _d = write!(f, "ROOT_CHANGED ");
         }
-        if self.contains(StreamFlags::MOUNT) {
+        if self.contains(Self::MOUNT) {
             let _d = write!(f, "MOUNT ");
         }
-        if self.contains(StreamFlags::UNMOUNT) {
+        if self.contains(Self::UNMOUNT) {
             let _d = write!(f, "UNMOUNT ");
         }
-        if self.contains(StreamFlags::ITEM_CREATED) {
+        if self.contains(Self::ITEM_CREATED) {
             let _d = write!(f, "ITEM_CREATED ");
         }
-        if self.contains(StreamFlags::ITEM_REMOVED) {
+        if self.contains(Self::ITEM_REMOVED) {
             let _d = write!(f, "ITEM_REMOVED ");
         }
-        if self.contains(StreamFlags::INODE_META_MOD) {
+        if self.contains(Self::INODE_META_MOD) {
             let _d = write!(f, "INODE_META_MOD ");
         }
-        if self.contains(StreamFlags::ITEM_RENAMED) {
+        if self.contains(Self::ITEM_RENAMED) {
             let _d = write!(f, "ITEM_RENAMED ");
         }
-        if self.contains(StreamFlags::ITEM_MODIFIED) {
+        if self.contains(Self::ITEM_MODIFIED) {
             let _d = write!(f, "ITEM_MODIFIED ");
         }
-        if self.contains(StreamFlags::FINDER_INFO_MOD) {
+        if self.contains(Self::FINDER_INFO_MOD) {
             let _d = write!(f, "FINDER_INFO_MOD ");
         }
-        if self.contains(StreamFlags::ITEM_CHANGE_OWNER) {
+        if self.contains(Self::ITEM_CHANGE_OWNER) {
             let _d = write!(f, "ITEM_CHANGE_OWNER ");
         }
-        if self.contains(StreamFlags::ITEM_XATTR_MOD) {
+        if self.contains(Self::ITEM_XATTR_MOD) {
             let _d = write!(f, "ITEM_XATTR_MOD ");
         }
-        if self.contains(StreamFlags::IS_FILE) {
+        if self.contains(Self::IS_FILE) {
             let _d = write!(f, "IS_FILE ");
         }
-        if self.contains(StreamFlags::IS_DIR) {
+        if self.contains(Self::IS_DIR) {
             let _d = write!(f, "IS_DIR ");
         }
-        if self.contains(StreamFlags::IS_SYMLINK) {
+        if self.contains(Self::IS_SYMLINK) {
             let _d = write!(f, "IS_SYMLINK ");
         }
-        if self.contains(StreamFlags::OWN_EVENT) {
+        if self.contains(Self::OWN_EVENT) {
             let _d = write!(f, "OWN_EVENT ");
         }
-        if self.contains(StreamFlags::IS_LAST_HARDLINK) {
+        if self.contains(Self::IS_LAST_HARDLINK) {
             let _d = write!(f, "IS_LAST_HARDLINK ");
         }
-        if self.contains(StreamFlags::IS_HARDLINK) {
+        if self.contains(Self::IS_HARDLINK) {
             let _d = write!(f, "IS_HARDLINK ");
         }
-        if self.contains(StreamFlags::ITEM_CLONED) {
+        if self.contains(Self::ITEM_CLONED) {
             let _d = write!(f, "ITEM_CLONED ");
         }
         write!(f, "")
