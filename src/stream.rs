@@ -25,7 +25,6 @@ use core_foundation::number::CFNumber;
 use core_foundation::runloop::{kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::CFString;
 use either::Either;
-use futures::stream::{abortable, AbortHandle, Abortable};
 use futures::{Stream, StreamExt};
 use log::{debug, error};
 use tokio_stream::wrappers::ReceiverStream;
@@ -54,7 +53,7 @@ pub(crate) static TEST_RUNNING_RUNLOOP_COUNT: std::sync::atomic::AtomicUsize =
 /// Dropping the handler without first calling [`abort`](EventStreamHandler::abort) is not
 /// recommended because this leaves a spawned thread behind and causes memory leaks.
 pub struct EventStreamHandler {
-    runloop: Option<(CFRunLoop, thread::JoinHandle<()>, AbortHandle)>,
+    runloop: Option<(CFRunLoop, thread::JoinHandle<()>)>,
 }
 
 // Safety:
@@ -68,7 +67,7 @@ impl EventStreamHandler {
     /// Calling this method multiple times has no extra effect and won't cause any panic, error,
     /// or undefined behavior.
     pub fn abort(&mut self) {
-        if let Some((runloop, thread_handle, abort_handle)) = self.runloop.take() {
+        if let Some((runloop, thread_handle)) = self.runloop.take() {
             let (tx, rx) = channel();
             let observer = create_oneshot_observer(kCFRunLoopBeforeWaiting, tx);
             runloop.add_observer(&observer, unsafe { kCFRunLoopDefaultMode });
@@ -83,9 +82,6 @@ impl EventStreamHandler {
 
             // Wait for the thread to shut down.
             thread_handle.join().expect("thread to shut down");
-
-            // Abort the stream.
-            abort_handle.abort();
         }
     }
 }
@@ -104,7 +100,7 @@ pub struct Event {
 ///
 /// Call [`create_event_stream`](create_event_stream) to create it.
 pub struct EventStream {
-    stream: Abortable<ReceiverStream<Event>>,
+    stream: ReceiverStream<Event>,
 }
 
 impl Stream for EventStream {
@@ -202,14 +198,13 @@ pub fn create_event_stream<P: AsRef<Path>>(
         TEST_RUNNING_RUNLOOP_COUNT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     });
 
-    let (stream, stream_handle) = abortable(ReceiverStream::new(event_rx));
+    let stream = ReceiverStream::new(event_rx);
     Ok((
         EventStream { stream },
         EventStreamHandler {
             runloop: Some((
                 runloop_rx.recv().expect("receive runloop from worker").0,
                 thread_handle,
-                stream_handle,
             )),
         },
     ))
