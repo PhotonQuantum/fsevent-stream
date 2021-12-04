@@ -25,7 +25,7 @@ use fsevent_stream::ffi::{
 use fsevent_stream::stream::create_event_stream;
 use futures_util::StreamExt;
 
-let (mut stream, handler) = create_event_stream(
+let (stream, handler) = create_event_stream(
     [Path::new(".")],
     kFSEventStreamEventIdSinceNow,
     Duration::ZERO,
@@ -35,6 +35,8 @@ let (mut stream, handler) = create_event_stream(
         | kFSEventStreamCreateFlagUseCFTypes,
 )
     .expect("stream to be created");
+
+let mut stream = stream.into_flatten();
 while let Some(event) = stream.next().await {
     println!(
         "[{}] path: {:?}({}), flags: {} ({:x})",

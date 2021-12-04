@@ -29,7 +29,7 @@ async fn main() {
 
 async fn run() {
     pretty_env_logger::init();
-    let (mut stream, _handler) = create_event_stream(
+    let (stream, _handler) = create_event_stream(
         [Path::new("./")],
         kFSEventStreamEventIdSinceNow,
         Duration::ZERO,
@@ -39,6 +39,7 @@ async fn run() {
             | kFSEventStreamCreateFlagUseCFTypes,
     )
     .expect("stream to be created");
+    let mut stream = stream.into_flatten();
     while let Some(event) = stream.next().await {
         info!(
             "[{}] path: {:?}({}), flags: {} ({:x})",

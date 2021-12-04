@@ -40,7 +40,7 @@
 //! # }
 //!
 //! # async fn run() {
-//! let (mut stream, handler) = create_event_stream(
+//! let (stream, handler) = create_event_stream(
 //!     [Path::new(".")],
 //!     kFSEventStreamEventIdSinceNow,
 //!     Duration::ZERO,
@@ -56,6 +56,8 @@
 //! #     handler.abort();
 //! # });
 //! # }
+//!
+//! let mut stream = stream.into_flatten();
 //! while let Some(event) = stream.next().await {
 //!     println!(
 //!         "[{}] path: {:?}({}), flags: {} ({:x})",

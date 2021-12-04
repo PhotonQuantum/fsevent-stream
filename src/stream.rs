@@ -28,7 +28,7 @@ use core_foundation::runloop::{kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode, C
 use core_foundation::string::CFString;
 use either::Either;
 use futures_core::Stream;
-use futures_util::StreamExt;
+use futures_util::stream::{iter, StreamExt};
 use log::{debug, error};
 #[cfg(feature = "tokio")]
 use tokio1 as tokio;
@@ -102,18 +102,28 @@ pub struct Event {
     pub id: FSEventStreamEventId,
 }
 
-/// A stream of `FSEvents` API events.
+/// A stream of `FSEvents` API event batches.
+///
+/// You may want a stream of [`Event`](Event) instead of a stream of batches of it.
+/// Call [`EventStream::into_flatten`](EventStream::into_flatten) to get one.
 ///
 /// Call [`create_event_stream`](create_event_stream) to create it.
 pub struct EventStream {
     #[cfg(feature = "tokio")]
-    stream: ReceiverStream<Event>,
+    stream: ReceiverStream<Vec<Event>>,
     #[cfg(feature = "async-std")]
-    stream: async_std::channel::Receiver<Event>,
+    stream: async_std::channel::Receiver<Vec<Event>>,
+}
+
+impl EventStream {
+    /// Flatten event batches and produce a stream of [`Event`](Event).
+    pub fn into_flatten(self) -> impl Stream<Item = Event> {
+        self.flat_map(iter)
+    }
 }
 
 impl Stream for EventStream {
-    type Item = Event;
+    type Item = Vec<Event>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.stream.poll_next_unpin(cx)
@@ -122,9 +132,9 @@ impl Stream for EventStream {
 
 pub(crate) struct StreamContextInfo {
     #[cfg(feature = "tokio")]
-    event_handler: tokio::sync::mpsc::Sender<Event>,
+    event_handler: tokio::sync::mpsc::Sender<Vec<Event>>,
     #[cfg(feature = "async-std")]
-    event_handler: async_std::channel::Sender<Event>,
+    event_handler: async_std::channel::Sender<Vec<Event>>,
     create_flags: FSEventStreamCreateFlags,
 }
 
@@ -378,21 +388,25 @@ fn callback_impl(
     let create_flags = unsafe { &(*info).create_flags };
     let event_handler = unsafe { &(*info).event_handler };
 
-    for event in event_iter(
+    let events = event_iter(
         *create_flags,
         num_events,
         event_paths,
         event_flags,
         event_ids,
-    ) {
-        match event {
-            Ok(event) => {
-                if let Err(e) = event_handler.try_send(event) {
-                    error!("Unable to send event from callback: {}", e);
-                }
+    )
+    .filter_map(|event| {
+        if let Err(e) = &event {
+            match e {
+                CallbackError::ToI64 => error!("Unable to convert inode field to i64"),
+                CallbackError::ParseFlags => error!("Unable to parse flags"),
             }
-            Err(CallbackError::ToI64) => error!("Unable to convert inode field to i64"),
-            Err(CallbackError::ParseFlags) => error!("Unable to parse flags"),
         }
+        event.ok()
+    })
+    .collect();
+
+    if let Err(e) = event_handler.try_send(events) {
+        error!("Unable to send event from callback: {}", e);
     }
 }

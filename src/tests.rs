@@ -74,15 +74,21 @@ async fn must_abort_stream() {
     // The stream should complete soon.
     #[cfg(feature = "tokio")]
     drop(
-        tokio::time::timeout(Duration::from_secs(1), stream.collect::<Vec<_>>())
-            .await
-            .expect("to complete"),
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            stream.into_flatten().collect::<Vec<_>>(),
+        )
+        .await
+        .expect("to complete"),
     );
     #[cfg(feature = "async-std")]
     drop(
-        async_std::future::timeout(Duration::from_secs(1), stream.collect::<Vec<_>>())
-            .await
-            .expect("to complete"),
+        async_std::future::timeout(
+            Duration::from_secs(1),
+            stream.into_flatten().collect::<Vec<_>>(),
+        )
+        .await
+        .expect("to complete"),
     );
 
     // The runloop should be released.
@@ -182,13 +188,15 @@ async fn must_receive_fs_events_impl(
 
     // It's fine to consume the stream later because it's reactive and can still be consumed if it's aborted.
     #[cfg(feature = "tokio")]
-    let events: Vec<_> = tokio::time::timeout(Duration::from_secs(6), stream.collect())
-        .await
-        .expect("to complete");
+    let events: Vec<_> =
+        tokio::time::timeout(Duration::from_secs(6), stream.into_flatten().collect())
+            .await
+            .expect("to complete");
     #[cfg(feature = "async-std")]
-    let events: Vec<_> = async_std::future::timeout(Duration::from_secs(6), stream.collect())
-        .await
-        .expect("to complete");
+    let events: Vec<_> =
+        async_std::future::timeout(Duration::from_secs(6), stream.into_flatten().collect())
+            .await
+            .expect("to complete");
 
     if verify_file_events {
         // A dir creation event might be recorded so it's ok we receive 2~3 events.
