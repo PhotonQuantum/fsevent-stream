@@ -1,5 +1,8 @@
-pub mod low_level;
+pub mod stream;
 #[macro_use]
-pub mod sys;
+pub mod ffi;
+pub mod flags;
 mod observer;
+#[cfg(test)]
+mod tests;
 mod utils;

@@ -33,7 +33,7 @@ fn str_path_to_cfstring_ref(source: &Path) -> io::Result<CFString> {
         .map(|path| path.absolute().get_file_system_path(kCFURLPOSIXPathStyle))
 }
 
-pub trait CFRunLoopExt {
+pub(crate) trait CFRunLoopExt {
     fn is_waiting(&self) -> bool;
 }
 
@@ -50,20 +50,20 @@ pub struct __FSEventStream {
     _marker: PhantomData<(*mut u8, PhantomPinned)>,
 }
 
-pub type FSEventStreamRef = *mut __FSEventStream;
+pub type SysFSEventStreamRef = *mut __FSEventStream;
 
-/// An ergonomic wrapper of [`FSEventStreamRef`](FSEventStreamRef).
+/// An ergonomic wrapper of [`SysFSEventStreamRef`](SysFSEventStreamRef).
 ///
 /// This wrapper complies with Rust's ownership model, and releases its resource when dropped.
-pub struct FSEventStream(FSEventStreamRef);
+pub struct SysFSEventStream(SysFSEventStreamRef);
 
 // Safety:
 // - According to the Apple documentation, it's safe to move `CFRef`s across threads.
 //   https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/ThreadSafetySummary/ThreadSafetySummary.html
-unsafe impl Send for FSEventStream {}
+unsafe impl Send for SysFSEventStream {}
 
 pub type FSEventStreamCallback = extern "C" fn(
-    FSEventStreamRef,               // ConstFSEventStreamRef streamRef
+    SysFSEventStreamRef,            // ConstFSEventStreamRef streamRef
     *mut c_void,                    // void *clientCallBackInfo
     usize,                          // size_t numEvents
     *mut c_void,                    // void *eventPaths
@@ -119,7 +119,7 @@ pub const kFSEventStreamEventExtendedFileIDKey: Lazy<CFString> =
     Lazy::new(|| CFString::new("fileID"));
 
 #[repr(C)]
-pub struct FSEventStreamContext {
+pub struct SysFSEventStreamContext {
     pub version: CFIndex,
     pub info: *mut c_void,
     pub retain: Option<CFAllocatorRetainCallBack>,
@@ -127,7 +127,7 @@ pub struct FSEventStreamContext {
     pub copy_description: Option<CFAllocatorCopyDescriptionCallBack>,
 }
 
-/// Generate a callback that free the context when the stream created by [`FSEventStream::new`](FSEventStream::new) is released.
+/// Generate a callback that free the context when the stream created by [`SysFSEventStream::new`](SysFSEventStream::new) is released.
 ///
 /// Usage: `impl_release_callback!(release_ctx, YourCtxType)`
 // Safety:
@@ -154,8 +154,8 @@ macro_rules! impl_release_callback {
     };
 }
 
-impl FSEventStreamContext {
-    /// Create a new [`FSEventStreamContext`](FSEventStreamContext).
+impl SysFSEventStreamContext {
+    /// Create a new [`SysFSEventStreamContext`](SysFSEventStreamContext).
     ///
     /// `release_callback` can be constructed using [`impl_release_callback`](impl_release_callback) macro.
     pub fn new<T>(ctx: T, release_callback: CFAllocatorReleaseCallBack) -> Self {
@@ -170,14 +170,14 @@ impl FSEventStreamContext {
     }
 }
 
-impl FSEventStream {
-    /// Create a new raw [`FSEventStream`](FSEventStream).
+impl SysFSEventStream {
+    /// Create a new [`SysFSEventStream`](SysFSEventStream).
     ///
     /// # Errors
     /// Return error when there's any invalid path in `paths_to_watch`.
     pub fn new<P: AsRef<Path>>(
         callback: FSEventStreamCallback,
-        context: &FSEventStreamContext,
+        context: &SysFSEventStreamContext,
         paths_to_watch: impl IntoIterator<Item = P>,
         since_when: FSEventStreamEventId,
         latency: Duration,
@@ -231,7 +231,7 @@ impl FSEventStream {
     }
 }
 
-impl Drop for FSEventStream {
+impl Drop for SysFSEventStream {
     fn drop(&mut self) {
         unsafe { FSEventStreamRelease(self.0) };
     }
@@ -242,29 +242,29 @@ extern "C" {
     fn FSEventStreamCreate(
         allocator: CFAllocatorRef,
         callback: FSEventStreamCallback,
-        context: *const FSEventStreamContext,
+        context: *const SysFSEventStreamContext,
         pathsToWatch: CFArrayRef,
         sinceWhen: FSEventStreamEventId,
         latency: CFTimeInterval,
         flags: FSEventStreamCreateFlags,
-    ) -> FSEventStreamRef;
+    ) -> SysFSEventStreamRef;
 
-    fn FSEventStreamShow(stream_ref: FSEventStreamRef);
+    fn FSEventStreamShow(stream_ref: SysFSEventStreamRef);
     fn FSEventStreamScheduleWithRunLoop(
-        stream_ref: FSEventStreamRef,
+        stream_ref: SysFSEventStreamRef,
         run_loop: CFRunLoopRef,
         run_loop_mode: CFRunLoopMode,
     );
 
     fn FSEventStreamUnscheduleFromRunLoop(
-        stream_ref: FSEventStreamRef,
+        stream_ref: SysFSEventStreamRef,
         run_loop: CFRunLoopRef,
         run_loop_mode: CFRunLoopMode,
     );
 
-    fn FSEventStreamStart(stream_ref: FSEventStreamRef) -> Boolean;
-    fn FSEventStreamFlushSync(stream_ref: FSEventStreamRef);
-    fn FSEventStreamStop(stream_ref: FSEventStreamRef);
-    fn FSEventStreamInvalidate(stream_ref: FSEventStreamRef);
-    fn FSEventStreamRelease(stream_ref: FSEventStreamRef);
+    fn FSEventStreamStart(stream_ref: SysFSEventStreamRef) -> Boolean;
+    fn FSEventStreamFlushSync(stream_ref: SysFSEventStreamRef);
+    fn FSEventStreamStop(stream_ref: SysFSEventStreamRef);
+    fn FSEventStreamInvalidate(stream_ref: SysFSEventStreamRef);
+    fn FSEventStreamRelease(stream_ref: SysFSEventStreamRef);
 }

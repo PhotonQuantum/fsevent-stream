@@ -1,8 +1,9 @@
-//! Low-level stream-based `FSEvents` interface.
+//! Stream-based `FSEvents` interface.
 #![allow(
-    clippy::borrow_interior_mutable_const,
+    clippy::non_send_fields_in_send_ty,
     clippy::cast_possible_wrap,
-    clippy::non_send_fields_in_send_ty
+    clippy::borrow_interior_mutable_const,
+    clippy::module_name_repetitions
 )]
 
 use std::ffi::{c_void, CStr, OsStr};
@@ -29,40 +30,40 @@ use futures::{Stream, StreamExt};
 use log::{debug, error};
 use tokio_stream::wrappers::ReceiverStream;
 
-pub use flags::StreamFlags;
-
-use crate::impl_release_callback;
-use crate::observer::create_oneshot_observer;
-use crate::sys::{
+use crate::ffi::{
     kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagUseCFTypes,
     kFSEventStreamCreateFlagUseExtendedData, kFSEventStreamEventExtendedDataPathKey,
-    kFSEventStreamEventExtendedFileIDKey, CFRunLoopExt, FSEventStream, FSEventStreamContext,
-    FSEventStreamCreateFlags, FSEventStreamEventFlags, FSEventStreamEventId, FSEventStreamRef,
+    kFSEventStreamEventExtendedFileIDKey, CFRunLoopExt, FSEventStreamCreateFlags,
+    FSEventStreamEventFlags, FSEventStreamEventId, SysFSEventStream, SysFSEventStreamContext,
+    SysFSEventStreamRef,
 };
+pub use crate::flags::StreamFlags;
+use crate::impl_release_callback;
+use crate::observer::create_oneshot_observer;
 use crate::utils::FlagsExt;
 
-mod flags;
 #[cfg(test)]
-mod tests;
+pub(crate) static TEST_RUNNING_RUNLOOP_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
-/// An owned permission to stop a `RawEventStream` and terminate its backing `RunLoop`.
+/// An owned permission to stop an [`EventStream`](EventStream) and terminate its backing `RunLoop`.
 ///
-/// A `RawEventStreamHandler` *detaches* the associated Stream and `RunLoop` when it is dropped, which
+/// A `EventStreamHandler` *detaches* the associated Stream and `RunLoop` when it is dropped, which
 /// means that there is no longer any handle to them and no way to `abort` them.
 ///
-/// Dropping the handler without first calling [`abort`](RawEventStreamHandler::abort) is not
+/// Dropping the handler without first calling [`abort`](EventStreamHandler::abort) is not
 /// recommended because this leaves a spawned thread behind and causes memory leaks.
-pub struct RawEventStreamHandler {
+pub struct EventStreamHandler {
     runloop: Option<(CFRunLoop, thread::JoinHandle<()>, AbortHandle)>,
 }
 
 // Safety:
 // - According to the Apple documentation, it's safe to move `CFRef`s across threads.
 //   https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/ThreadSafetySummary/ThreadSafetySummary.html
-unsafe impl Send for RawEventStreamHandler {}
+unsafe impl Send for EventStreamHandler {}
 
-impl RawEventStreamHandler {
-    /// Stop a `RawEventStream` and terminate its backing `RunLoop`.
+impl EventStreamHandler {
+    /// Stop an [`EventStream`](EventStream) and terminate its backing `RunLoop`.
     ///
     /// Calling this method multiple times has no extra effect and won't cause any panic, error,
     /// or undefined behavior.
@@ -91,7 +92,7 @@ impl RawEventStreamHandler {
 
 /// A low-level `FSEvents` event.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct RawEvent {
+pub struct Event {
     pub path: PathBuf,
     pub inode: Option<i64>,
     pub flags: StreamFlags,
@@ -101,21 +102,21 @@ pub struct RawEvent {
 
 /// A stream of low-level `FSEvents` API events.
 ///
-/// Call [`raw_event_stream`](raw_event_stream) to create it.
-pub struct RawEventStream {
-    stream: Abortable<ReceiverStream<RawEvent>>,
+/// Call [`create_event_stream`](create_event_stream) to create it.
+pub struct EventStream {
+    stream: Abortable<ReceiverStream<Event>>,
 }
 
-impl Stream for RawEventStream {
-    type Item = RawEvent;
+impl Stream for EventStream {
+    type Item = Event;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.stream.poll_next_unpin(cx)
     }
 }
 
-struct StreamContextInfo {
-    event_handler: tokio::sync::mpsc::Sender<RawEvent>,
+pub(crate) struct StreamContextInfo {
+    event_handler: tokio::sync::mpsc::Sender<Event>,
     create_flags: FSEventStreamCreateFlags,
 }
 
@@ -131,19 +132,19 @@ impl<T> SendWrapper<T> {
     }
 }
 
-/// Create a new [`RawEventStream`](RawEventStream) and [`RawEventStreamHandler`](RawEventStreamHandler) pair.
+/// Create a new [`EventStream`](EventStream) and [`EventStreamHandler`](EventStreamHandler) pair.
 ///
 /// # Errors
 /// Return error when there's any invalid path in `paths_to_watch`.
 ///
 /// # Panics
 /// Panic when the given flags combination is illegal.
-pub fn raw_event_stream<P: AsRef<Path>>(
+pub fn create_event_stream<P: AsRef<Path>>(
     paths_to_watch: impl IntoIterator<Item = P>,
     since_when: FSEventStreamEventId,
     latency: Duration,
     flags: FSEventStreamCreateFlags,
-) -> io::Result<(RawEventStream, RawEventStreamHandler)> {
+) -> io::Result<(EventStream, EventStreamHandler)> {
     if flags.contains(kFSEventStreamCreateFlagUseExtendedData)
         && !flags.contains(kFSEventStreamCreateFlagUseCFTypes)
     {
@@ -161,10 +162,10 @@ pub fn raw_event_stream<P: AsRef<Path>>(
         create_flags: flags,
     };
 
-    let stream_context = FSEventStreamContext::new(context, release_context);
+    let stream_context = SysFSEventStreamContext::new(context, release_context);
 
     // We must append some additional flags because our callback parse them so
-    let mut stream = FSEventStream::new(
+    let mut stream = SysFSEventStream::new(
         callback,
         &stream_context,
         paths_to_watch,
@@ -203,8 +204,8 @@ pub fn raw_event_stream<P: AsRef<Path>>(
 
     let (stream, stream_handle) = abortable(ReceiverStream::new(event_rx));
     Ok((
-        RawEventStream { stream },
-        RawEventStreamHandler {
+        EventStream { stream },
+        EventStreamHandler {
             runloop: Some((
                 runloop_rx.recv().expect("receive runloop from worker").0,
                 thread_handle,
@@ -214,12 +215,8 @@ pub fn raw_event_stream<P: AsRef<Path>>(
     ))
 }
 
-#[cfg(test)]
-static TEST_RUNNING_RUNLOOP_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 extern "C" fn callback(
-    stream_ref: FSEventStreamRef,
+    stream_ref: SysFSEventStreamRef,
     info: *mut c_void,
     num_events: usize,                           // size_t numEvents
     event_paths: *mut c_void,                    // void *eventPaths
@@ -249,7 +246,7 @@ fn event_iter(
     paths: *mut c_void,
     flags: *const FSEventStreamEventFlags,
     ids: *const FSEventStreamEventId,
-) -> impl Iterator<Item = Result<RawEvent, CallbackError>> {
+) -> impl Iterator<Item = Result<Event, CallbackError>> {
     if create_flags.contains(kFSEventStreamCreateFlagUseCFTypes) {
         Either::Left(
             if create_flags.contains(kFSEventStreamCreateFlagUseExtendedData) {
@@ -264,7 +261,7 @@ fn event_iter(
                     .and_then(|(dict, flags, id)| {
                         if create_flags.contains(kFSEventStreamCreateFlagFileEvents) {
                             // DataPathKey & FileIDKey
-                            Ok(RawEvent {
+                            Ok(Event {
                                 path: PathBuf::from(
                                     (*unsafe {
                                         CFString::from_void(
@@ -289,7 +286,7 @@ fn event_iter(
                             })
                         } else {
                             // DataPathKey
-                            Ok(RawEvent {
+                            Ok(Event {
                                 path: PathBuf::from(
                                     (*unsafe {
                                         CFString::from_void(
@@ -317,7 +314,7 @@ fn event_iter(
                         unsafe { *ids.add(idx) },
                     ))
                     .and_then(|(path, flags, id)| {
-                        Ok(RawEvent {
+                        Ok(Event {
                             path: PathBuf::from((*path).to_string()),
                             inode: None,
                             flags: StreamFlags::from_bits(flags)
@@ -339,7 +336,7 @@ fn event_iter(
                 unsafe { *ids.add(idx) },
             ))
             .and_then(|(path, flags, id)| {
-                Ok(RawEvent {
+                Ok(Event {
                     path: PathBuf::from(
                         OsStr::from_bytes(unsafe { CStr::from_ptr(path) }.to_bytes())
                             .to_os_string(),
@@ -355,7 +352,7 @@ fn event_iter(
 }
 
 fn callback_impl(
-    _stream_ref: FSEventStreamRef,
+    _stream_ref: SysFSEventStreamRef,
     info: *mut c_void,
     num_events: usize,                           // size_t numEvents
     event_paths: *mut c_void,                    // void *eventPaths
@@ -378,7 +375,7 @@ fn callback_impl(
         match event {
             Ok(event) => {
                 if let Err(e) = event_handler.try_send(event) {
-                    error!("Unable to raw event from low-level callback: {}", e);
+                    error!("Unable to send event from low-level callback: {}", e);
                 }
             }
             Err(CallbackError::ToI64) => error!("Unable to convert inode field to i64"),

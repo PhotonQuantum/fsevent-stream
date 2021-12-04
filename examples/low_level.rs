@@ -4,10 +4,10 @@ use std::time::Duration;
 use log::info;
 use tokio_stream::StreamExt;
 
-use fsevent_better::low_level::raw_event_stream;
-use fsevent_better::sys::{
+use fsevent_better::ffi::{
     kFSEventStreamCreateFlagNone, kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamEventIdSinceNow,
 };
+use fsevent_better::stream::create_event_stream;
 
 #[tokio::main]
 async fn main() {
@@ -16,8 +16,8 @@ async fn main() {
 
 async fn run() {
     pretty_env_logger::init();
-    let (mut stream, _handler) = raw_event_stream(
-        [Path::new("../")],
+    let (mut stream, _handler) = create_event_stream(
+        [Path::new(".")],
         kFSEventStreamEventIdSinceNow,
         Duration::from_secs(5),
         kFSEventStreamCreateFlagNone,

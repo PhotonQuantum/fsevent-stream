@@ -1,15 +1,13 @@
-# fsevent-better
+# fsevent-stream
 
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FPhotonQuantum%2Ffsevent-better?ref=badge_shield)
 
-> WIP
+Stream-based FSEvent API bindings.
 
-An attempt to make fsevent api easier to use.
+## Features
 
-## Planned features
-
-- [ ] Ergonomic stream-based apis with debouncing and deduplication.
-- [x] Safe wrappers around ffi calls to work directly on low level events. (See [low-level module](src/low_level.rs))
+- Support both directory-granular and file-granular events.
+- Retrieve related file inode with `kFSEventStreamCreateFlagUseExtendedData`.
 
 ## Acknowledgement
 

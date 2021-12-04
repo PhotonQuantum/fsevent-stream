@@ -1,3 +1,5 @@
+#![allow(clippy::borrow_interior_mutable_const, clippy::cast_possible_wrap)]
+
 use std::fs;
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
@@ -13,14 +15,15 @@ use tempfile::tempdir;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-use crate::sys::{
+use crate::ffi::{
     kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
     kFSEventStreamCreateFlagNone, kFSEventStreamCreateFlagUseCFTypes,
     kFSEventStreamCreateFlagUseExtendedData, kFSEventStreamEventIdSinceNow,
     FSEventStreamCreateFlags,
 };
-
-use super::{raw_event_stream, StreamContextInfo, StreamFlags, TEST_RUNNING_RUNLOOP_COUNT};
+use crate::stream::{
+    create_event_stream, StreamContextInfo, StreamFlags, TEST_RUNNING_RUNLOOP_COUNT,
+};
 
 static TEST_PARALLEL_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -36,7 +39,7 @@ async fn must_abort_stream() {
     let _guard = TEST_PARALLEL_LOCK.lock().await;
 
     // Create the stream to be tested.
-    let (stream, mut handler) = raw_event_stream(
+    let (stream, mut handler) = create_event_stream(
         ["."],
         kFSEventStreamEventIdSinceNow,
         Duration::ZERO,
@@ -109,7 +112,7 @@ async fn must_receive_fs_events_impl(
     let (tx, rx) = channel();
 
     // Create the stream to be tested.
-    let (stream, mut handler) = raw_event_stream(
+    let (stream, mut handler) = create_event_stream(
         [dir.path()],
         kFSEventStreamEventIdSinceNow,
         Duration::ZERO,
