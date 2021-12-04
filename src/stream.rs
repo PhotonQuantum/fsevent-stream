@@ -18,6 +18,8 @@ use std::task::{Context, Poll};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(feature = "async-std")]
+use async_std1 as async_std;
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFIndex, FromVoid};
 use core_foundation::dictionary::CFDictionary;
@@ -25,8 +27,12 @@ use core_foundation::number::CFNumber;
 use core_foundation::runloop::{kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::CFString;
 use either::Either;
-use futures::{Stream, StreamExt};
+use futures_core::Stream;
+use futures_util::StreamExt;
 use log::{debug, error};
+#[cfg(feature = "tokio")]
+use tokio1 as tokio;
+#[cfg(feature = "tokio")]
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::ffi::{
@@ -100,7 +106,10 @@ pub struct Event {
 ///
 /// Call [`create_event_stream`](create_event_stream) to create it.
 pub struct EventStream {
+    #[cfg(feature = "tokio")]
     stream: ReceiverStream<Event>,
+    #[cfg(feature = "async-std")]
+    stream: async_std::channel::Receiver<Event>,
 }
 
 impl Stream for EventStream {
@@ -112,7 +121,10 @@ impl Stream for EventStream {
 }
 
 pub(crate) struct StreamContextInfo {
+    #[cfg(feature = "tokio")]
     event_handler: tokio::sync::mpsc::Sender<Event>,
+    #[cfg(feature = "async-std")]
+    event_handler: async_std::channel::Sender<Event>,
     create_flags: FSEventStreamCreateFlags,
 }
 
@@ -147,7 +159,10 @@ pub fn create_event_stream<P: AsRef<Path>>(
         panic!("UseExtendedData requires UseCFTypes");
     }
 
+    #[cfg(feature = "tokio")]
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(1024);
+    #[cfg(feature = "async-std")]
+    let (event_tx, event_rx) = async_std::channel::bounded(1024);
 
     // We need to associate the stream context with our callback in order to propagate events
     // to the rest of the system. This will be owned by the stream, and will be freed when the
@@ -198,7 +213,10 @@ pub fn create_event_stream<P: AsRef<Path>>(
         TEST_RUNNING_RUNLOOP_COUNT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     });
 
+    #[cfg(feature = "tokio")]
     let stream = ReceiverStream::new(event_rx);
+    #[cfg(feature = "async-std")]
+    let stream = event_rx;
     Ok((
         EventStream { stream },
         EventStreamHandler {

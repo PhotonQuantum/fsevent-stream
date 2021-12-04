@@ -6,8 +6,16 @@ Stream-based FSEvent API bindings.
 
 ## Features
 
-- Support both directory-granular and file-granular events.
+- Support directory-granular and file-granular events.
 - Retrieve related file inode with `kFSEventStreamCreateFlagUseExtendedData`.
+
+## Runtime Support
+
+Both [`tokio`](https://github.com/tokio-rs/tokio) and [`async-std`](https://github.com/async-rs/async-std) are supported
+via feature flags.
+
+`tokio` support is enabled by default. To enable `async-std` support, disable default features and enable `async-std`
+feature.
 
 ## Acknowledgement
 

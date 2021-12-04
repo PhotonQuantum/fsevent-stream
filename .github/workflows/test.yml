@@ -21,17 +21,10 @@ jobs:
           components: rustfmt, clippy
           toolchain: stable
           default: true
+      - uses: extractions/setup-just@v1
       - uses: Swatinem/rust-cache@v1
-      - uses: actions-rs/cargo@v1
-        name: Check Code Format 🔧
-        with:
-          command: fmt
-          args: -- --check
-      - uses: actions-rs/cargo@v1
-        name: Run Clippy Lints 🔨
-        with:
-          command: clippy
-          args: --all-targets
+      - name: Running Lints 🔨
+        run: just ci
 
   test:
     name: Test
@@ -47,9 +40,7 @@ jobs:
           profile: minimal
           toolchain: stable
           default: true
+      - uses: extractions/setup-just@v1
       - uses: Swatinem/rust-cache@v1
-      - uses: actions-rs/cargo@v1
-        name: Running Tests 🚀
-        with:
-          command: test
-          args: --workspace
+      - name: Running Tests 🚀
+        run: just test-all

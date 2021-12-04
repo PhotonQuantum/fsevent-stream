@@ -1,15 +1,28 @@
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(feature = "async-std")]
+use async_std1 as async_std;
+use futures_util::StreamExt;
 use log::info;
-use tokio_stream::StreamExt;
+#[cfg(feature = "tokio")]
+use tokio1 as tokio;
 
 use fsevent_better::ffi::{
-    kFSEventStreamCreateFlagNone, kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamEventIdSinceNow,
+    kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
+    kFSEventStreamCreateFlagNone, kFSEventStreamCreateFlagUseCFTypes,
+    kFSEventStreamCreateFlagUseExtendedData, kFSEventStreamEventIdSinceNow,
 };
 use fsevent_better::stream::create_event_stream;
 
+#[cfg(feature = "tokio")]
 #[tokio::main]
+async fn main() {
+    run().await;
+}
+
+#[cfg(feature = "async-std")]
+#[async_std::main]
 async fn main() {
     run().await;
 }
@@ -20,7 +33,10 @@ async fn run() {
         [Path::new(".")],
         kFSEventStreamEventIdSinceNow,
         Duration::from_secs(5),
-        kFSEventStreamCreateFlagNone,
+        kFSEventStreamCreateFlagNoDefer
+            | kFSEventStreamCreateFlagFileEvents
+            | kFSEventStreamCreateFlagUseExtendedData
+            | kFSEventStreamCreateFlagUseCFTypes,
     )
     .expect("stream to be created");
     while let Some(raw_event) = stream.next().await {

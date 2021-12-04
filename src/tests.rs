@@ -9,11 +9,13 @@ use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 
-use futures::StreamExt;
+#[cfg(feature = "async-std")]
+use async_std1 as async_std;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use once_cell::sync::Lazy;
 use tempfile::tempdir;
-use tokio::sync::Mutex;
-use tokio::time::timeout;
+#[cfg(feature = "tokio")]
+use tokio1 as tokio;
 
 use crate::ffi::{
     kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
@@ -25,7 +27,11 @@ use crate::stream::{
     create_event_stream, StreamContextInfo, StreamFlags, TEST_RUNNING_RUNLOOP_COUNT,
 };
 
-static TEST_PARALLEL_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+#[cfg(feature = "tokio")]
+static TEST_PARALLEL_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+#[cfg(feature = "async-std")]
+static TEST_PARALLEL_LOCK: Lazy<async_std::sync::Mutex<()>> =
+    Lazy::new(|| async_std::sync::Mutex::new(()));
 
 #[test]
 fn must_steam_context_info_send_and_sync() {
@@ -33,7 +39,18 @@ fn must_steam_context_info_send_and_sync() {
     check_send::<StreamContextInfo>();
 }
 
+#[cfg(feature = "tokio")]
 #[tokio::test]
+async fn must_abort_stream_tokio() {
+    must_abort_stream().await;
+}
+
+#[cfg(feature = "async-std")]
+#[async_std::test]
+async fn must_abort_stream_async_std() {
+    must_abort_stream().await;
+}
+
 async fn must_abort_stream() {
     // Acquire the lock so that no other runloop can be created during this test.
     let _guard = TEST_PARALLEL_LOCK.lock().await;
@@ -55,24 +72,42 @@ async fn must_abort_stream() {
     });
 
     // The stream should complete soon.
+    #[cfg(feature = "tokio")]
     drop(
-        timeout(Duration::from_secs(1), stream.collect::<Vec<_>>())
+        tokio::time::timeout(Duration::from_secs(1), stream.collect::<Vec<_>>())
             .await
             .expect("to complete"),
     );
+    #[cfg(feature = "async-std")]
+    drop(
+        async_std::future::timeout(Duration::from_secs(1), stream.collect::<Vec<_>>())
+            .await
+            .expect("to complete"),
+    );
+
     // The runloop should be released.
     assert_eq!(TEST_RUNNING_RUNLOOP_COUNT.load(Ordering::SeqCst), 0);
 
     abort_thread.join().expect("to join");
 }
 
+#[cfg(feature = "tokio")]
 #[tokio::test]
-#[allow(clippy::semicolon_if_nothing_returned)]
+async fn must_receive_fs_events_tokio() {
+    must_receive_fs_events().await;
+}
+
+#[cfg(feature = "async-std")]
+#[async_std::test]
+async fn must_receive_fs_events_async_std() {
+    must_receive_fs_events().await;
+}
+
 async fn must_receive_fs_events() {
     // Acquire the lock so that runloop created in this test won't affect others.
     let _guard = TEST_PARALLEL_LOCK.lock().await;
 
-    let _ = tokio::join!(
+    let futs: FuturesUnordered<_> = [
         must_receive_fs_events_impl(
             kFSEventStreamCreateFlagFileEvents
                 | kFSEventStreamCreateFlagUseCFTypes
@@ -91,8 +126,12 @@ async fn must_receive_fs_events() {
             false,
             false,
         ),
-        must_receive_fs_events_impl(kFSEventStreamCreateFlagUseCFTypes, false, false)
-    );
+        must_receive_fs_events_impl(kFSEventStreamCreateFlagUseCFTypes, false, false),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(futs.collect::<Vec<_>>().await.len(), 5);
 }
 
 async fn must_receive_fs_events_impl(
@@ -125,6 +164,8 @@ async fn must_receive_fs_events_impl(
         // Tolerance time
         if option_env!("CI").is_some() {
             sleep(Duration::from_secs(5));
+        } else {
+            sleep(Duration::from_secs(1));
         }
         handler.abort();
     });
@@ -143,7 +184,12 @@ async fn must_receive_fs_events_impl(
     tx.send(()).expect("to signal");
 
     // It's fine to consume the stream later because it's reactive and can still be consumed if it's aborted.
-    let events: Vec<_> = timeout(Duration::from_secs(10), stream.collect())
+    #[cfg(feature = "tokio")]
+    let events: Vec<_> = tokio::time::timeout(Duration::from_secs(10), stream.collect())
+        .await
+        .expect("to complete");
+    #[cfg(feature = "async-std")]
+    let events: Vec<_> = async_std::future::timeout(Duration::from_secs(10), stream.collect())
         .await
         .expect("to complete");
 
