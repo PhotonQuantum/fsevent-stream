@@ -1,3 +1,5 @@
+//! `FSEvents` event flags.
+
 use std::fmt::{Display, Formatter};
 
 use crate::ffi;

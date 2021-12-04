@@ -92,7 +92,7 @@ impl EventStreamHandler {
     }
 }
 
-/// A low-level `FSEvents` event.
+/// An `FSEvents` API event.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Event {
     pub path: PathBuf,
@@ -102,7 +102,7 @@ pub struct Event {
     pub id: FSEventStreamEventId,
 }
 
-/// A stream of low-level `FSEvents` API events.
+/// A stream of `FSEvents` API events.
 ///
 /// Call [`create_event_stream`](create_event_stream) to create it.
 pub struct EventStream {
@@ -388,7 +388,7 @@ fn callback_impl(
         match event {
             Ok(event) => {
                 if let Err(e) = event_handler.try_send(event) {
-                    error!("Unable to send event from low-level callback: {}", e);
+                    error!("Unable to send event from callback: {}", e);
                 }
             }
             Err(CallbackError::ToI64) => error!("Unable to convert inode field to i64"),

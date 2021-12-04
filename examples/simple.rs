@@ -8,12 +8,12 @@ use log::info;
 #[cfg(feature = "tokio")]
 use tokio1 as tokio;
 
-use fsevent_better::ffi::{
+use fsevent_stream::ffi::{
     kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
-    kFSEventStreamCreateFlagNone, kFSEventStreamCreateFlagUseCFTypes,
-    kFSEventStreamCreateFlagUseExtendedData, kFSEventStreamEventIdSinceNow,
+    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamCreateFlagUseExtendedData,
+    kFSEventStreamEventIdSinceNow,
 };
-use fsevent_better::stream::create_event_stream;
+use fsevent_stream::stream::create_event_stream;
 
 #[cfg(feature = "tokio")]
 #[tokio::main]
@@ -30,23 +30,23 @@ async fn main() {
 async fn run() {
     pretty_env_logger::init();
     let (mut stream, _handler) = create_event_stream(
-        [Path::new(".")],
+        [Path::new("./")],
         kFSEventStreamEventIdSinceNow,
-        Duration::from_secs(5),
+        Duration::ZERO,
         kFSEventStreamCreateFlagNoDefer
             | kFSEventStreamCreateFlagFileEvents
             | kFSEventStreamCreateFlagUseExtendedData
             | kFSEventStreamCreateFlagUseCFTypes,
     )
     .expect("stream to be created");
-    while let Some(raw_event) = stream.next().await {
+    while let Some(event) = stream.next().await {
         info!(
             "[{}] path: {:?}({}), flags: {} ({:x})",
-            raw_event.id,
-            raw_event.path,
-            raw_event.inode.unwrap_or(-1),
-            raw_event.flags,
-            raw_event.raw_flags
+            event.id,
+            event.path,
+            event.inode.unwrap_or(-1),
+            event.flags,
+            event.raw_flags
         );
     }
 }

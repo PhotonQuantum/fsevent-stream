@@ -163,7 +163,7 @@ async fn must_receive_fs_events_impl(
         rx.recv().expect("to be signaled");
         // Tolerance time
         if option_env!("CI").is_some() {
-            sleep(Duration::from_secs(5));
+            sleep(Duration::from_secs(10));
         } else {
             sleep(Duration::from_secs(1));
         }
@@ -185,11 +185,11 @@ async fn must_receive_fs_events_impl(
 
     // It's fine to consume the stream later because it's reactive and can still be consumed if it's aborted.
     #[cfg(feature = "tokio")]
-    let events: Vec<_> = tokio::time::timeout(Duration::from_secs(10), stream.collect())
+    let events: Vec<_> = tokio::time::timeout(Duration::from_secs(11), stream.collect())
         .await
         .expect("to complete");
     #[cfg(feature = "async-std")]
-    let events: Vec<_> = async_std::future::timeout(Duration::from_secs(10), stream.collect())
+    let events: Vec<_> = async_std::future::timeout(Duration::from_secs(11), stream.collect())
         .await
         .expect("to complete");
 
