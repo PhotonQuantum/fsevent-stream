@@ -6,8 +6,7 @@ use tokio_stream::StreamExt;
 
 use fsevent_better::low_level::raw_event_stream;
 use fsevent_better::sys::{
-    kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
-    kFSEventStreamEventIdSinceNow,
+    kFSEventStreamCreateFlagNone, kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamEventIdSinceNow,
 };
 
 #[tokio::main]
@@ -20,14 +19,18 @@ async fn run() {
     let (mut stream, _handler) = raw_event_stream(
         [Path::new("../")],
         kFSEventStreamEventIdSinceNow,
-        Duration::ZERO,
-        kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer,
+        Duration::from_secs(5),
+        kFSEventStreamCreateFlagNone,
     )
     .expect("stream to be created");
     while let Some(raw_event) = stream.next().await {
         info!(
             "[{}] path: {:?}({}), flags: {} ({:x})",
-            raw_event.id, raw_event.path, raw_event.inode, raw_event.flags, raw_event.raw_flags
+            raw_event.id,
+            raw_event.path,
+            raw_event.inode.unwrap_or(-1),
+            raw_event.flags,
+            raw_event.raw_flags
         );
     }
 }

@@ -15,7 +15,9 @@ use tokio::time::timeout;
 
 use crate::sys::{
     kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
-    kFSEventStreamEventFlagNone, kFSEventStreamEventIdSinceNow,
+    kFSEventStreamCreateFlagNone, kFSEventStreamCreateFlagUseCFTypes,
+    kFSEventStreamCreateFlagUseExtendedData, kFSEventStreamEventIdSinceNow,
+    FSEventStreamCreateFlags,
 };
 
 use super::{raw_event_stream, StreamContextInfo, StreamFlags, TEST_RUNNING_RUNLOOP_COUNT};
@@ -38,7 +40,7 @@ async fn must_abort_stream() {
         ["."],
         kFSEventStreamEventIdSinceNow,
         Duration::ZERO,
-        kFSEventStreamEventFlagNone,
+        kFSEventStreamCreateFlagNone,
     )
     .expect("to be created");
     // Now there should be one runloop.
@@ -62,10 +64,39 @@ async fn must_abort_stream() {
 }
 
 #[tokio::test]
+#[allow(clippy::semicolon_if_nothing_returned)]
 async fn must_receive_fs_events() {
     // Acquire the lock so that runloop created in this test won't affect others.
     let _guard = TEST_PARALLEL_LOCK.lock().await;
 
+    let _ = tokio::join!(
+        must_receive_fs_events_impl(
+            kFSEventStreamCreateFlagFileEvents
+                | kFSEventStreamCreateFlagUseCFTypes
+                | kFSEventStreamCreateFlagUseExtendedData,
+            true,
+            true,
+        ),
+        must_receive_fs_events_impl(
+            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes,
+            false,
+            true,
+        ),
+        must_receive_fs_events_impl(kFSEventStreamCreateFlagFileEvents, false, true),
+        must_receive_fs_events_impl(
+            kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagUseExtendedData,
+            false,
+            false,
+        ),
+        must_receive_fs_events_impl(kFSEventStreamCreateFlagUseCFTypes, false, false)
+    );
+}
+
+async fn must_receive_fs_events_impl(
+    flags: FSEventStreamCreateFlags,
+    verify_inode: bool,
+    verify_file_events: bool,
+) {
     // Create the test dir.
     let dir = tempdir().expect("to be created");
     let test_file = dir
@@ -82,14 +113,15 @@ async fn must_receive_fs_events() {
         [dir.path()],
         kFSEventStreamEventIdSinceNow,
         Duration::ZERO,
-        kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer,
+        flags | kFSEventStreamCreateFlagNoDefer,
     )
     .expect("to be created");
     let abort_thread = thread::spawn(move || {
         // Once fs operations are completed, abort the stream.
         rx.recv().expect("to be signaled");
+        // Tolerance time
         if option_env!("CI").is_some() {
-            sleep(Duration::from_secs(5)); // tolerance time
+            sleep(Duration::from_secs(5));
         }
         handler.abort();
     });
@@ -112,24 +144,32 @@ async fn must_receive_fs_events() {
         .await
         .expect("to complete");
 
-    // A dir creation event might be recorded so it's ok we receive 2~3 events.
-    assert!(events.len() == 2 || events.len() == 3);
+    if verify_file_events {
+        // A dir creation event might be recorded so it's ok we receive 2~3 events.
+        assert!(events.len() == 2 || events.len() == 3);
 
-    // The second last event should be the file creation event.
-    let event_fst = events.get(events.len() - 2).expect("to exist");
-    assert_eq!(event_fst.path.as_path(), test_file.as_path());
-    assert_eq!(event_fst.inode, inode);
-    assert!(event_fst
-        .flags
-        .contains(StreamFlags::ITEM_CREATED | StreamFlags::IS_FILE));
+        // The second last event should be the file creation event.
+        let event_fst = events.get(events.len() - 2).expect("to exist");
+        assert_eq!(event_fst.path.as_path(), test_file.as_path());
+        if verify_inode {
+            assert_eq!(event_fst.inode, Some(inode));
+        }
+        assert!(event_fst
+            .flags
+            .contains(StreamFlags::ITEM_CREATED | StreamFlags::IS_FILE));
 
-    // The last event should be the file deletion event.
-    let event_snd = events.last().expect("to exist");
-    assert_eq!(event_snd.path.as_path(), test_file.as_path());
-    assert_eq!(event_snd.inode, inode);
-    assert!(event_snd
-        .flags
-        .contains(StreamFlags::ITEM_REMOVED | StreamFlags::IS_FILE));
+        // The last event should be the file deletion event.
+        let event_snd = events.last().expect("to exist");
+        assert_eq!(event_snd.path.as_path(), test_file.as_path());
+        if verify_inode {
+            assert_eq!(event_snd.inode, Some(inode));
+        }
+        assert!(event_snd
+            .flags
+            .contains(StreamFlags::ITEM_REMOVED | StreamFlags::IS_FILE));
+    } else {
+        assert!(!events.is_empty());
+    }
 
     abort_thread.join().expect("to join");
 }

@@ -1,8 +1,14 @@
 //! Low-level stream-based `FSEvents` interface.
-#![allow(clippy::borrow_interior_mutable_const, clippy::cast_possible_wrap)]
+#![allow(
+    clippy::borrow_interior_mutable_const,
+    clippy::cast_possible_wrap,
+    clippy::non_send_fields_in_send_ty
+)]
 
-use std::ffi::c_void;
+use std::ffi::{c_void, CStr, OsStr};
 use std::io;
+use std::os::raw::c_char;
+use std::os::unix::ffi::OsStrExt;
 use std::panic::catch_unwind;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -17,6 +23,7 @@ use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::runloop::{kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::CFString;
+use either::Either;
 use futures::stream::{abortable, AbortHandle, Abortable};
 use futures::{Stream, StreamExt};
 use log::{debug, error};
@@ -27,11 +34,12 @@ pub use flags::StreamFlags;
 use crate::impl_release_callback;
 use crate::observer::create_oneshot_observer;
 use crate::sys::{
-    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamCreateFlagUseExtendedData,
-    kFSEventStreamEventExtendedDataPathKey, kFSEventStreamEventExtendedFileIDKey, CFRunLoopExt,
-    FSEventStream, FSEventStreamContext, FSEventStreamCreateFlags, FSEventStreamEventFlags,
-    FSEventStreamEventId, FSEventStreamRef,
+    kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagUseCFTypes,
+    kFSEventStreamCreateFlagUseExtendedData, kFSEventStreamEventExtendedDataPathKey,
+    kFSEventStreamEventExtendedFileIDKey, CFRunLoopExt, FSEventStream, FSEventStreamContext,
+    FSEventStreamCreateFlags, FSEventStreamEventFlags, FSEventStreamEventId, FSEventStreamRef,
 };
+use crate::utils::FlagsExt;
 
 mod flags;
 #[cfg(test)]
@@ -85,7 +93,7 @@ impl RawEventStreamHandler {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RawEvent {
     pub path: PathBuf,
-    pub inode: i64,
+    pub inode: Option<i64>,
     pub flags: StreamFlags,
     pub raw_flags: FSEventStreamEventFlags,
     pub id: FSEventStreamEventId,
@@ -108,6 +116,7 @@ impl Stream for RawEventStream {
 
 struct StreamContextInfo {
     event_handler: tokio::sync::mpsc::Sender<RawEvent>,
+    create_flags: FSEventStreamCreateFlags,
 }
 
 impl_release_callback!(release_context, StreamContextInfo);
@@ -126,12 +135,21 @@ impl<T> SendWrapper<T> {
 ///
 /// # Errors
 /// Return error when there's any invalid path in `paths_to_watch`.
+///
+/// # Panics
+/// Panic when the given flags combination is illegal.
 pub fn raw_event_stream<P: AsRef<Path>>(
     paths_to_watch: impl IntoIterator<Item = P>,
     since_when: FSEventStreamEventId,
     latency: Duration,
     flags: FSEventStreamCreateFlags,
 ) -> io::Result<(RawEventStream, RawEventStreamHandler)> {
+    if flags.contains(kFSEventStreamCreateFlagUseExtendedData)
+        && !flags.contains(kFSEventStreamCreateFlagUseCFTypes)
+    {
+        panic!("UseExtendedData requires UseCFTypes");
+    }
+
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(1024);
 
     // We need to associate the stream context with our callback in order to propagate events
@@ -140,6 +158,7 @@ pub fn raw_event_stream<P: AsRef<Path>>(
     // `FSEventStreamRelease`.
     let context = StreamContextInfo {
         event_handler: event_tx,
+        create_flags: flags,
     };
 
     let stream_context = FSEventStreamContext::new(context, release_context);
@@ -151,7 +170,7 @@ pub fn raw_event_stream<P: AsRef<Path>>(
         paths_to_watch,
         since_when,
         latency,
-        flags | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagUseExtendedData,
+        flags,
     )?;
 
     // channel to pass runloop around
@@ -224,6 +243,117 @@ enum CallbackError {
     ParseFlags,
 }
 
+fn event_iter(
+    create_flags: FSEventStreamCreateFlags,
+    num: usize,
+    paths: *mut c_void,
+    flags: *const FSEventStreamEventFlags,
+    ids: *const FSEventStreamEventId,
+) -> impl Iterator<Item = Result<RawEvent, CallbackError>> {
+    if create_flags.contains(kFSEventStreamCreateFlagUseCFTypes) {
+        Either::Left(
+            if create_flags.contains(kFSEventStreamCreateFlagUseExtendedData) {
+                // CFDict
+                let paths = unsafe { CFArray::<CFDictionary<CFString>>::from_void(paths) };
+                Either::Left((0..num).map(move |idx| {
+                    Ok((
+                        unsafe { paths.get_unchecked(idx as CFIndex) },
+                        unsafe { *flags.add(idx) },
+                        unsafe { *ids.add(idx) },
+                    ))
+                    .and_then(|(dict, flags, id)| {
+                        if create_flags.contains(kFSEventStreamCreateFlagFileEvents) {
+                            // DataPathKey & FileIDKey
+                            Ok(RawEvent {
+                                path: PathBuf::from(
+                                    (*unsafe {
+                                        CFString::from_void(
+                                            *dict.get(&*kFSEventStreamEventExtendedDataPathKey),
+                                        )
+                                    })
+                                    .to_string(),
+                                ),
+                                inode: Some(
+                                    unsafe {
+                                        CFNumber::from_void(
+                                            *dict.get(&*kFSEventStreamEventExtendedFileIDKey),
+                                        )
+                                    }
+                                    .to_i64()
+                                    .ok_or(CallbackError::ToI64)?,
+                                ),
+                                flags: StreamFlags::from_bits(flags)
+                                    .ok_or(CallbackError::ParseFlags)?,
+                                raw_flags: flags,
+                                id,
+                            })
+                        } else {
+                            // DataPathKey
+                            Ok(RawEvent {
+                                path: PathBuf::from(
+                                    (*unsafe {
+                                        CFString::from_void(
+                                            *dict.get(&*kFSEventStreamEventExtendedDataPathKey),
+                                        )
+                                    })
+                                    .to_string(),
+                                ),
+                                inode: None,
+                                flags: StreamFlags::from_bits(flags)
+                                    .ok_or(CallbackError::ParseFlags)?,
+                                raw_flags: flags,
+                                id,
+                            })
+                        }
+                    })
+                }))
+            } else {
+                // CFString
+                let paths = unsafe { CFArray::<CFString>::from_void(paths) };
+                Either::Right((0..num).map(move |idx| {
+                    Ok((
+                        unsafe { paths.get_unchecked(idx as CFIndex) },
+                        unsafe { *flags.add(idx) },
+                        unsafe { *ids.add(idx) },
+                    ))
+                    .and_then(|(path, flags, id)| {
+                        Ok(RawEvent {
+                            path: PathBuf::from((*path).to_string()),
+                            inode: None,
+                            flags: StreamFlags::from_bits(flags)
+                                .ok_or(CallbackError::ParseFlags)?,
+                            raw_flags: flags,
+                            id,
+                        })
+                    })
+                }))
+            },
+        )
+    } else {
+        // Normal types
+        let paths = paths as *const *const c_char;
+        Either::Right((0..num).map(move |idx| {
+            Ok((
+                unsafe { *paths.add(idx) },
+                unsafe { *flags.add(idx) },
+                unsafe { *ids.add(idx) },
+            ))
+            .and_then(|(path, flags, id)| {
+                Ok(RawEvent {
+                    path: PathBuf::from(
+                        OsStr::from_bytes(unsafe { CStr::from_ptr(path) }.to_bytes())
+                            .to_os_string(),
+                    ),
+                    inode: None,
+                    flags: StreamFlags::from_bits(flags).ok_or(CallbackError::ParseFlags)?,
+                    raw_flags: flags,
+                    id,
+                })
+            })
+        }))
+    }
+}
+
 fn callback_impl(
     _stream_ref: FSEventStreamRef,
     info: *mut c_void,
@@ -234,45 +364,20 @@ fn callback_impl(
 ) {
     debug!("Received {} event(s)", num_events);
 
-    let event_paths = unsafe { CFArray::<CFDictionary<CFString>>::from_void(event_paths) };
     let info = info as *const StreamContextInfo;
+    let create_flags = unsafe { &(*info).create_flags };
     let event_handler = unsafe { &(*info).event_handler };
 
-    for idx in 0..num_events {
-        match Ok((
-            unsafe { event_paths.get_unchecked(idx as CFIndex) },
-            unsafe { *event_flags.add(idx) },
-            unsafe { *event_ids.add(idx) },
-        ))
-        .and_then(|(extended, raw_flags, id)| {
-            let path = unsafe {
-                CFString::from_void(*extended.get(&*kFSEventStreamEventExtendedDataPathKey))
-            };
-            let inode = unsafe {
-                CFNumber::from_void(*extended.get(&*kFSEventStreamEventExtendedFileIDKey))
-            };
-            Ok((
-                PathBuf::from((*path).to_string()),
-                inode.to_i64().ok_or(CallbackError::ToI64)?,
-                raw_flags,
-                id,
-            ))
-        })
-        .and_then(|(path, inode, raw_flags, id)| {
-            StreamFlags::from_bits(raw_flags)
-                .ok_or(CallbackError::ParseFlags)
-                .map(|flags| RawEvent {
-                    path,
-                    inode,
-                    flags,
-                    raw_flags,
-                    id,
-                })
-        }) {
-            Ok(raw_event) =>
-            // Send event out.
-            {
-                if let Err(e) = event_handler.try_send(raw_event) {
+    for event in event_iter(
+        *create_flags,
+        num_events,
+        event_paths,
+        event_flags,
+        event_ids,
+    ) {
+        match event {
+            Ok(event) => {
+                if let Err(e) = event_handler.try_send(event) {
                     error!("Unable to raw event from low-level callback: {}", e);
                 }
             }

@@ -10,6 +10,8 @@ use core_foundation::runloop::{
     CFRunLoopObserverRef,
 };
 
+use crate::utils::FlagsExt;
+
 pub struct ObserverContextInfo {
     interest: CFRunLoopActivity,
     tx: Sender<CFRunLoopActivity>,
@@ -24,7 +26,7 @@ extern "C" fn observer_callback(
 ) {
     drop(catch_unwind(move || {
         let ctx: &ObserverContextInfo = unsafe { &*(info.cast()) };
-        if (ctx.interest & activity) == activity {
+        if ctx.interest.contains(activity) {
             let _ = ctx.tx.send(activity);
         }
     }));
