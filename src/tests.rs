@@ -107,39 +107,32 @@ async fn must_receive_fs_events() {
     // Acquire the lock so that runloop created in this test won't affect others.
     let _guard = TEST_PARALLEL_LOCK.lock().await;
 
-    let futs = [
+    let ci = option_env!("CI").is_some();
+    let futs: FuturesUnordered<_> = [
         must_receive_fs_events_impl(
             kFSEventStreamCreateFlagFileEvents
                 | kFSEventStreamCreateFlagUseCFTypes
                 | kFSEventStreamCreateFlagUseExtendedData,
-            true,
-            true,
+            !ci,
+            !ci,
         ),
         must_receive_fs_events_impl(
             kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes,
             false,
-            true,
+            !ci,
         ),
-        must_receive_fs_events_impl(kFSEventStreamCreateFlagFileEvents, false, true),
+        must_receive_fs_events_impl(kFSEventStreamCreateFlagFileEvents, false, !ci),
         must_receive_fs_events_impl(
             kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagUseExtendedData,
             false,
             false,
         ),
         must_receive_fs_events_impl(kFSEventStreamCreateFlagUseCFTypes, false, false),
-    ];
+    ]
+    .into_iter()
+    .collect();
 
-    if option_env!("CI").is_some() {
-        for fut in futs {
-            fut.await;
-        }
-    } else {
-        let futs: FuturesUnordered<_> = futs
-            .into_iter()
-            .collect();
-
-        assert_eq!(futs.collect::<Vec<_>>().await.len(), 5);
-    }
+    assert_eq!(futs.collect::<Vec<_>>().await.len(), 5);
 }
 
 async fn must_receive_fs_events_impl(
@@ -170,11 +163,7 @@ async fn must_receive_fs_events_impl(
         // Once fs operations are completed, abort the stream.
         rx.recv().expect("to be signaled");
         // Tolerance time
-        if option_env!("CI").is_some() {
-            sleep(Duration::from_secs(5));
-        } else {
-            sleep(Duration::from_secs(1));
-        }
+        sleep(Duration::from_secs(1));
         handler.abort();
     });
 
