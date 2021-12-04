@@ -107,7 +107,7 @@ async fn must_receive_fs_events() {
     // Acquire the lock so that runloop created in this test won't affect others.
     let _guard = TEST_PARALLEL_LOCK.lock().await;
 
-    let futs: FuturesUnordered<_> = [
+    let futs = [
         must_receive_fs_events_impl(
             kFSEventStreamCreateFlagFileEvents
                 | kFSEventStreamCreateFlagUseCFTypes
@@ -127,11 +127,19 @@ async fn must_receive_fs_events() {
             false,
         ),
         must_receive_fs_events_impl(kFSEventStreamCreateFlagUseCFTypes, false, false),
-    ]
-    .into_iter()
-    .collect();
+    ];
 
-    assert_eq!(futs.collect::<Vec<_>>().await.len(), 5);
+    if option_env!("CI").is_some() {
+        for fut in futs {
+            fut.await;
+        }
+    } else {
+        let futs: FuturesUnordered<_> = futs
+            .into_iter()
+            .collect();
+
+        assert_eq!(futs.collect::<Vec<_>>().await.len(), 5);
+    }
 }
 
 async fn must_receive_fs_events_impl(
@@ -163,7 +171,7 @@ async fn must_receive_fs_events_impl(
         rx.recv().expect("to be signaled");
         // Tolerance time
         if option_env!("CI").is_some() {
-            sleep(Duration::from_secs(10));
+            sleep(Duration::from_secs(5));
         } else {
             sleep(Duration::from_secs(1));
         }
@@ -185,11 +193,11 @@ async fn must_receive_fs_events_impl(
 
     // It's fine to consume the stream later because it's reactive and can still be consumed if it's aborted.
     #[cfg(feature = "tokio")]
-    let events: Vec<_> = tokio::time::timeout(Duration::from_secs(11), stream.collect())
+    let events: Vec<_> = tokio::time::timeout(Duration::from_secs(6), stream.collect())
         .await
         .expect("to complete");
     #[cfg(feature = "async-std")]
-    let events: Vec<_> = async_std::future::timeout(Duration::from_secs(11), stream.collect())
+    let events: Vec<_> = async_std::future::timeout(Duration::from_secs(6), stream.collect())
         .await
         .expect("to complete");
 
