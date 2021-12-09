@@ -41,13 +41,6 @@ async fn run() {
     .expect("stream to be created");
     let mut stream = stream.into_flatten();
     while let Some(event) = stream.next().await {
-        info!(
-            "[{}] path: {:?}({}), flags: {} ({:x})",
-            event.id,
-            event.path,
-            event.inode.unwrap_or(-1),
-            event.flags,
-            event.raw_flags
-        );
+        info!("{}", event);
     }
 }

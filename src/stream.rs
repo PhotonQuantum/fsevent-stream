@@ -7,6 +7,7 @@
 )]
 
 use std::ffi::{c_void, CStr, OsStr};
+use std::fmt::{Display, Formatter};
 use std::io;
 use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
@@ -100,6 +101,20 @@ pub struct Event {
     pub flags: StreamFlags,
     pub raw_flags: FSEventStreamEventFlags,
     pub id: FSEventStreamEventId,
+}
+
+impl Display for Event {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{}] path: {:?}({}), flags: {} ({:x})",
+            self.id,
+            self.path,
+            self.inode.unwrap_or(-1),
+            self.flags,
+            self.raw_flags
+        )
+    }
 }
 
 /// A stream of `FSEvents` API event batches.
