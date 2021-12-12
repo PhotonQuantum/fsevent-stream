@@ -267,4 +267,6 @@ extern "C" {
     fn FSEventStreamStop(stream_ref: SysFSEventStreamRef);
     fn FSEventStreamInvalidate(stream_ref: SysFSEventStreamRef);
     fn FSEventStreamRelease(stream_ref: SysFSEventStreamRef);
+
+    pub fn FSEventsGetCurrentEventId() -> FSEventStreamEventId;
 }
