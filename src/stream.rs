@@ -27,7 +27,6 @@ use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::runloop::{kCFRunLoopBeforeWaiting, kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::CFString;
-use either::Either;
 use futures_core::Stream;
 use futures_util::stream::{iter, StreamExt};
 use log::{debug, error};
@@ -150,7 +149,6 @@ pub(crate) struct StreamContextInfo {
     event_handler: tokio::sync::mpsc::Sender<Vec<Event>>,
     #[cfg(feature = "async-std")]
     event_handler: async_std::channel::Sender<Vec<Event>>,
-    create_flags: FSEventStreamCreateFlags,
 }
 
 impl_release_callback!(release_context, StreamContextInfo);
@@ -195,10 +193,23 @@ pub fn create_event_stream<P: AsRef<Path>>(
     // `FSEventStreamRelease`.
     let context = StreamContextInfo {
         event_handler: event_tx,
-        create_flags: flags,
     };
 
     let stream_context = SysFSEventStreamContext::new(context, release_context);
+
+    let callback = if flags.contains(kFSEventStreamCreateFlagUseCFTypes) {
+        if flags.contains(kFSEventStreamCreateFlagUseExtendedData) {
+            if flags.contains(kFSEventStreamCreateFlagFileEvents) {
+                cf_ext_with_id_callback
+            } else {
+                cf_ext_callback
+            }
+        } else {
+            cf_callback
+        }
+    } else {
+        normal_callback
+    };
 
     // We must append some additional flags because our callback parse them so
     let mut stream = SysFSEventStream::new(
@@ -253,175 +264,170 @@ pub fn create_event_stream<P: AsRef<Path>>(
     ))
 }
 
-extern "C" fn callback(
-    stream_ref: SysFSEventStreamRef,
-    info: *mut c_void,
-    num_events: usize,                           // size_t numEvents
-    event_paths: *mut c_void,                    // void *eventPaths
-    event_flags: *const FSEventStreamEventFlags, // const FSEventStreamEventFlags eventFlags[]
-    event_ids: *const FSEventStreamEventId,      // const FSEventStreamEventId eventIds[]
-) {
-    drop(catch_unwind(move || {
-        callback_impl(
-            stream_ref,
-            info,
-            num_events,
-            event_paths,
-            event_flags,
-            event_ids,
-        );
-    }));
-}
-
 enum CallbackError {
     ToI64,
     ParseFlags,
 }
 
-fn event_iter(
-    create_flags: FSEventStreamCreateFlags,
-    num: usize,
-    paths: *mut c_void,
-    flags: *const FSEventStreamEventFlags,
-    ids: *const FSEventStreamEventId,
-) -> impl Iterator<Item = Result<Event, CallbackError>> {
-    if create_flags.contains(kFSEventStreamCreateFlagUseCFTypes) {
-        Either::Left(
-            if create_flags.contains(kFSEventStreamCreateFlagUseExtendedData) {
-                // CFDict
-                let paths = unsafe { CFArray::<CFDictionary<CFString>>::from_void(paths) };
-                Either::Left((0..num).map(move |idx| {
-                    Ok((
-                        unsafe { paths.get_unchecked(idx as CFIndex) },
-                        unsafe { *flags.add(idx) },
-                        unsafe { *ids.add(idx) },
-                    ))
-                    .and_then(|(dict, flags, id)| {
-                        if create_flags.contains(kFSEventStreamCreateFlagFileEvents) {
-                            // DataPathKey & FileIDKey
-                            Ok(Event {
-                                path: PathBuf::from(
-                                    (*unsafe {
-                                        CFString::from_void(
-                                            *dict.get(&*kFSEventStreamEventExtendedDataPathKey),
-                                        )
-                                    })
-                                    .to_string(),
-                                ),
-                                inode: Some(
-                                    unsafe {
-                                        CFNumber::from_void(
-                                            *dict.get(&*kFSEventStreamEventExtendedFileIDKey),
-                                        )
-                                    }
-                                    .to_i64()
-                                    .ok_or(CallbackError::ToI64)?,
-                                ),
-                                flags: StreamFlags::from_bits(flags)
-                                    .ok_or(CallbackError::ParseFlags)?,
-                                raw_flags: flags,
-                                id,
-                            })
-                        } else {
-                            // DataPathKey
-                            Ok(Event {
-                                path: PathBuf::from(
-                                    (*unsafe {
-                                        CFString::from_void(
-                                            *dict.get(&*kFSEventStreamEventExtendedDataPathKey),
-                                        )
-                                    })
-                                    .to_string(),
-                                ),
-                                inode: None,
-                                flags: StreamFlags::from_bits(flags)
-                                    .ok_or(CallbackError::ParseFlags)?,
-                                raw_flags: flags,
-                                id,
-                            })
+macro_rules! define_callback {
+    ($name: ident, ($num: ident, $paths: ident, $flags: ident, $ids: ident)$body: block) => {
+        extern "C" fn $name(
+            stream_ref: SysFSEventStreamRef,
+            info: *mut c_void,
+            num_events: usize,                           // size_t numEvents
+            event_paths: *mut c_void,                    // void *eventPaths
+            event_flags: *const FSEventStreamEventFlags, // const FSEventStreamEventFlags eventFlags[]
+            event_ids: *const FSEventStreamEventId,      // const FSEventStreamEventId eventIds[]
+        ) {
+            fn callback_impl(
+                _stream_ref: SysFSEventStreamRef,
+                info: *mut c_void,
+                num_events: usize,                           // size_t numEvents
+                event_paths: *mut c_void,                    // void *eventPaths
+                event_flags: *const FSEventStreamEventFlags, // const FSEventStreamEventFlags eventFlags[]
+                event_ids: *const FSEventStreamEventId, // const FSEventStreamEventId eventIds[]
+            ) {
+                fn event_iter(
+                    $num: usize,
+                    $paths: *mut c_void,
+                    $flags: *const FSEventStreamEventFlags,
+                    $ids: *const FSEventStreamEventId,
+                ) -> impl Iterator<Item = Result<Event, CallbackError>> {
+                    $body
+                }
+
+                debug!("Received {} event(s)", num_events);
+
+                let info = info as *const StreamContextInfo;
+                let event_handler = unsafe { &(*info).event_handler };
+
+                let events = event_iter(num_events, event_paths, event_flags, event_ids)
+                    .filter_map(|event| {
+                        if let Err(e) = &event {
+                            match e {
+                                CallbackError::ToI64 => {
+                                    error!("Unable to convert inode field to i64")
+                                }
+                                CallbackError::ParseFlags => error!("Unable to parse flags"),
+                            }
                         }
+                        event.ok()
                     })
-                }))
-            } else {
-                // CFString
-                let paths = unsafe { CFArray::<CFString>::from_void(paths) };
-                Either::Right((0..num).map(move |idx| {
-                    Ok((
-                        unsafe { paths.get_unchecked(idx as CFIndex) },
-                        unsafe { *flags.add(idx) },
-                        unsafe { *ids.add(idx) },
-                    ))
-                    .and_then(|(path, flags, id)| {
-                        Ok(Event {
-                            path: PathBuf::from((*path).to_string()),
-                            inode: None,
-                            flags: StreamFlags::from_bits(flags)
-                                .ok_or(CallbackError::ParseFlags)?,
-                            raw_flags: flags,
-                            id,
-                        })
+                    .collect();
+
+                if let Err(e) = event_handler.try_send(events) {
+                    error!("Unable to send event from callback: {}", e);
+                }
+            }
+
+            drop(catch_unwind(move || {
+                callback_impl(
+                    stream_ref,
+                    info,
+                    num_events,
+                    event_paths,
+                    event_flags,
+                    event_ids,
+                );
+            }));
+        }
+    };
+}
+
+define_callback!(cf_ext_with_id_callback, (num, paths, flags, ids){
+    let paths = unsafe { CFArray::<CFDictionary<CFString>>::from_void(paths) };
+    (0..num).map(move |idx| {
+        Ok((
+            unsafe { paths.get_unchecked(idx as CFIndex) },
+            unsafe { *flags.add(idx) },
+            unsafe { *ids.add(idx) },
+        ))
+        .and_then(|(dict, flags, id)| {
+            Ok(Event {
+                path: PathBuf::from(
+                    (*unsafe {
+                        CFString::from_void(*dict.get(&*kFSEventStreamEventExtendedDataPathKey),)
                     })
-                }))
-            },
-        )
-    } else {
-        // Normal types
-        let paths = paths as *const *const c_char;
-        Either::Right((0..num).map(move |idx| {
-            Ok((
-                unsafe { *paths.add(idx) },
-                unsafe { *flags.add(idx) },
-                unsafe { *ids.add(idx) },
-            ))
+                        .to_string(),
+                ),
+                inode: Some(
+                    unsafe {CFNumber::from_void(*dict.get(&*kFSEventStreamEventExtendedFileIDKey))}
+                        .to_i64()
+                        .ok_or(CallbackError::ToI64)?,
+                ),
+                flags: StreamFlags::from_bits(flags).ok_or(CallbackError::ParseFlags)?,
+                raw_flags: flags,
+                id,
+            })
+        })
+    })
+});
+
+define_callback!(cf_ext_callback, (num, paths, flags, ids){
+    let paths = unsafe { CFArray::<CFDictionary<CFString>>::from_void(paths) };
+    (0..num).map(move |idx| {
+        Ok((
+            unsafe { paths.get_unchecked(idx as CFIndex) },
+            unsafe { *flags.add(idx) },
+            unsafe { *ids.add(idx) },
+        ))
+        .and_then(|(dict, flags, id)| {
+            Ok(Event {
+                path: PathBuf::from(
+                    (*unsafe {
+                        CFString::from_void(*dict.get(&*kFSEventStreamEventExtendedDataPathKey),)
+                    })
+                        .to_string(),
+                ),
+                inode: None,
+                flags: StreamFlags::from_bits(flags).ok_or(CallbackError::ParseFlags)?,
+                raw_flags: flags,
+                id,
+            })
+        })
+    })
+});
+
+define_callback!(cf_callback, (num, paths, flags, ids){
+    let paths = unsafe { CFArray::<CFString>::from_void(paths) };
+    (0..num).map(move |idx| {
+        Ok((
+            unsafe { paths.get_unchecked(idx as CFIndex) },
+            unsafe { *flags.add(idx) },
+            unsafe { *ids.add(idx) },
+        ))
             .and_then(|(path, flags, id)| {
                 Ok(Event {
-                    path: PathBuf::from(
-                        OsStr::from_bytes(unsafe { CStr::from_ptr(path) }.to_bytes())
-                            .to_os_string(),
-                    ),
+                    path: PathBuf::from((*path).to_string()),
                     inode: None,
-                    flags: StreamFlags::from_bits(flags).ok_or(CallbackError::ParseFlags)?,
+                    flags: StreamFlags::from_bits(flags)
+                        .ok_or(CallbackError::ParseFlags)?,
                     raw_flags: flags,
                     id,
                 })
             })
-        }))
-    }
-}
-
-fn callback_impl(
-    _stream_ref: SysFSEventStreamRef,
-    info: *mut c_void,
-    num_events: usize,                           // size_t numEvents
-    event_paths: *mut c_void,                    // void *eventPaths
-    event_flags: *const FSEventStreamEventFlags, // const FSEventStreamEventFlags eventFlags[]
-    event_ids: *const FSEventStreamEventId,      // const FSEventStreamEventId eventIds[]
-) {
-    debug!("Received {} event(s)", num_events);
-
-    let info = info as *const StreamContextInfo;
-    let create_flags = unsafe { &(*info).create_flags };
-    let event_handler = unsafe { &(*info).event_handler };
-
-    let events = event_iter(
-        *create_flags,
-        num_events,
-        event_paths,
-        event_flags,
-        event_ids,
-    )
-    .filter_map(|event| {
-        if let Err(e) = &event {
-            match e {
-                CallbackError::ToI64 => error!("Unable to convert inode field to i64"),
-                CallbackError::ParseFlags => error!("Unable to parse flags"),
-            }
-        }
-        event.ok()
     })
-    .collect();
+});
 
-    if let Err(e) = event_handler.try_send(events) {
-        error!("Unable to send event from callback: {}", e);
-    }
-}
+define_callback!(normal_callback, (num, paths, flags, ids){
+    let paths = paths as *const *const c_char;
+    (0..num).map(move |idx| {
+        Ok((
+            unsafe { *paths.add(idx) },
+            unsafe { *flags.add(idx) },
+            unsafe { *ids.add(idx) },
+        ))
+        .and_then(|(path, flags, id)| {
+            Ok(Event {
+                path: PathBuf::from(
+                    OsStr::from_bytes(unsafe { CStr::from_ptr(path) }.to_bytes())
+                        .to_os_string(),
+                ),
+                inode: None,
+                flags: StreamFlags::from_bits(flags).ok_or(CallbackError::ParseFlags)?,
+                raw_flags: flags,
+                id,
+            })
+        })
+    })
+});
