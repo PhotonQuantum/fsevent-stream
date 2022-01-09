@@ -211,7 +211,6 @@ pub fn create_event_stream<P: AsRef<Path>>(
         normal_callback
     };
 
-    // We must append some additional flags because our callback parse them so
     let mut stream = SysFSEventStream::new(
         callback,
         &stream_context,

@@ -1,6 +1,6 @@
 [package]
 name = "fsevent-stream"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["LightQuantum <self@lightquantum.me>"]
 edition = "2021"
 description = "Stream-based FSEvent API bindings."
