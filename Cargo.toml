@@ -34,6 +34,6 @@ tokio1 = { package = "tokio", version = "1.14", features = ["sync"], optional = 
 [dev-dependencies]
 async-std1 = { package = "async-std", version = "1.10", features = ["attributes"] }
 libc = "0.2"
-pretty_env_logger = "0.4"
+pretty_env_logger = "0.5"
 tempfile = "3.5"
 tokio1 = { package = "tokio", version = "1.14", features = ["rt-multi-thread", "sync", "macros"] }
